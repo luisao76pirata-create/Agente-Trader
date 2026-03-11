@@ -7,4 +7,4 @@ WORKDIR /app
 COPY package.json ./
 RUN bun install
 COPY . .
-CMD ["bun", "run", "start"]
+CMD ["/bin/sh", "-c", "echo \"TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN\" > .env && echo \"OPENAI_API_KEY=$OPENAI_API_KEY\" >> .env && bun run start"]
