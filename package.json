@@ -6,9 +6,9 @@
     "start": "elizaos start --character=characters/solana-trader.character.json"
   },
   "dependencies": {
-    "@elizaos/cli": "0.25.9",
-    "@elizaos/plugin-telegram": "0.25.9",
-    "@elizaos/plugin-openai": "0.25.9"
+    "@elizaos/cli": "1.0.0-beta.1",
+    "@elizaos/plugin-telegram": "1.0.0-beta.1",
+    "@elizaos/plugin-openai": "1.0.0-beta.1"
   },
   "engines": {
     "node": ">=23.0.0"
