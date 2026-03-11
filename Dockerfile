@@ -5,6 +5,6 @@ RUN apt-get update && apt-get install -y \
 RUN npm install -g bun@1.3.5
 WORKDIR /app
 COPY package.json ./
-RUN bun install --frozen-lockfile=false
+RUN bun install
 COPY . .
 CMD ["bun", "run", "start"]
