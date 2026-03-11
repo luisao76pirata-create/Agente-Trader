@@ -1,17 +1,24 @@
 {
-  "name": "agente-trader",
+  "name": "alpha-centauri-agente",
   "version": "1.0.0",
+  "main": "src/index.ts",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node --loader ts-node/esm src/index.ts",
+    "build": "tsc",
+    "dev": "nodemon --exec node --loader ts-node/esm src/index.ts"
   },
   "dependencies": {
-    "@elizaos/core": "1.0.0-beta.1",
-    "@elizaos/adapter-sqlite": "1.0.0-beta.1",
-    "@elizaos/plugin-telegram": "1.0.0-beta.1",
-    "@elizaos/plugin-openai": "1.0.0-beta.1"
+    "@elizaos/core": "*",
+    "@elizaos/adapter-sqlite": "*",
+    "@elizaos/plugin-solana": "*",
+    "@elizaos/plugin-bootstrap": "*",
+    "@elizaos/plugin-node": "*",
+    "dotenv": "^16.4.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
   },
   "engines": {
-    "node": ">=23.0.0"
+    "node": ">=22"
   }
 }
