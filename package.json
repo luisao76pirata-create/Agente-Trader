@@ -1,0 +1,14 @@
+{
+  "name": "agente-trader",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "elizaos start --character=characters/solana-trader.character.json"
+  },
+  "dependencies": {
+    "@elizaos/cli": "1.0.0-beta.1"
+  },
+  "engines": {
+    "node": ">=23.0.0"
+  }
+}
