@@ -61,15 +61,46 @@ function preFilter(pair) {
 }
 
 export async function scanMarket() {
-  try {
-    console.log("🔍 Scanning DexScreener...");
-    const res = await fetch(DEXSCREENER_URL, {
-  headers: {
-    "Accept": "application/json",
-    "User-Agent": "Mozilla/5.0"
-  },
-  timeout: 10000
-});
+    try {
+        console.log("🔍 Pidiendo datos a DexScreener...");
+        
+        // Usamos este endpoint que es el que mejor funciona para búsquedas globales
+        const url = "https://api.dexscreener.com/latest/dex/search?q=solana";
+        const response = await axios.get(url, { 
+            headers: { 'User-Agent': 'Mozilla/5.0' }, // Engañamos a la API para que no nos bloquee
+            timeout: 8000 
+        });
+
+        const pairs = response.data.pairs || [];
+
+        if (pairs.length === 0) {
+            console.log("⚠️ La API no devolvió nada. Puede ser un bloqueo temporal.");
+            return [];
+        }
+
+        // Filtramos solo lo que realmente nos interesa para no saturar
+        const filtered = pairs
+            .filter(p => p.chainId === "solana" && p.liquidity?.usd > 10000)
+            .map(p => ({
+                token: p.baseToken?.symbol || "N/A",
+                address: p.baseToken?.address,
+                price: Number(p.priceUsd) || 0,
+                liquidity: p.liquidity?.usd || 0,
+                mcap: p.fdv || 0,
+                v5m: p.volume?.m5 || 0,
+                ratio: (p.txns?.h1?.buys || 1) / (p.txns?.h1?.sells || 1),
+                momentum: (p.volume?.m5 > 8000), // Subimos un poco el listón
+                url: p.url
+            }));
+
+        console.log(`✅ Analizados ${filtered.length} tokens de Solana.`);
+        return filtered;
+
+    } catch (e) {
+        console.error("❌ Error en Scanner:", e.message);
+        return [];
+    }
+}
 
 const data = await res.json();
 
