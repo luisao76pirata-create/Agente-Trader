@@ -1,20 +1,13 @@
 {
-  "name": "agente-trader",
+  "name": "alpha-centauri-agent",
   "version": "1.0.0",
   "type": "module",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "@elizaos/core": "latest",
-    "@elizaos/adapter-sqlite": "latest",
-    "@elizaos/client-telegram": "latest",
-    "@elizaos/plugin-solana": "latest",
-    "@elizaos/plugin-bootstrap": "latest",
-    "better-sqlite3": "^11.0.0",
-    "dotenv": "^16.4.5"
-  },
-  "engines": {
-    "node": "23"
+    "axios": "^1.6.0",
+    "dotenv": "^16.4.0"
   }
 }
