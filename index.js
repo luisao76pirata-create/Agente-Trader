@@ -9,7 +9,7 @@ const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const db = new Database('alpha_centauri.db');
 
-// ⚠️ PON TU ID DE TELEGRAM AQUÍ
+// ✅ Tu ID de Telegram configurado
 const MY_CHAT_ID = 745415554; 
 
 // --- PARÁMETROS DE GESTIÓN ($500) ---
@@ -54,7 +54,9 @@ async function closeTrade(id, exitPrice, entryPrice, tokenName, reason) {
     
     const emoji = profitUsd > 0 ? "💰" : "🛑";
     await bot.telegram.sendMessage(MY_CHAT_ID, 
-        `${emoji} **POSICIÓN CERRADA: ${tokenName}**\nMotivo: ${reason}\nResultado: $${profitUsd.toFixed(2)} (${((exitPrice - entryPrice)/entryPrice*100).toFixed(2)}%)`, 
+        `${emoji} **POSICIÓN CERRADA: ${tokenName}**\n` +
+        `Motivo: ${reason}\n` +
+        `Resultado: $${profitUsd.toFixed(2)} (${((exitPrice - entryPrice)/entryPrice*100).toFixed(2)}%)`, 
         { parse_mode: 'Markdown' });
 }
 
