@@ -7,11 +7,10 @@ import { Portfolio } from "./portfolio.js"
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN)
 const portfolio = new Portfolio()
 
-// Sustituye esto por tu ID de Telegram si lo conoces, 
-// o el bot te lo dirá al escribirle /id
-let myChatId = null;
+// ⚠️ PON AQUÍ TU NÚMERO DE ID (Sin comillas)
+const MY_CHAT_ID = 745415554; 
 
-console.log("🚀 Alpha-Centauri-01 booting with Telegram support")
+console.log("🚀 Alpha-Centauri-01 booting - Fixed ID Mode")
 
 async function tradingLoop() {
     try {
@@ -25,7 +24,8 @@ async function tradingLoop() {
             const message = `🎯 ¡SEÑAL DETECTADA!\nToken: ${token.token}\nAcción: ${signal.action}\nConfianza: ${signal.confidence}%`
             console.log(message)
             
-            if (myChatId) bot.telegram.sendMessage(myChatId, message)
+            // Ahora el bot sabe siempre a quién escribir
+            await bot.telegram.sendMessage(MY_CHAT_ID, message).catch(e => console.log("Error enviando TG:", e.message))
             
             portfolio.openPosition(token.token, token.price, 1)
         }
@@ -34,12 +34,12 @@ async function tradingLoop() {
     }
 }
 
-// Comando para saber tu ID y conectar el bot contigo
-bot.command('start', (ctx) => {
-    myChatId = ctx.chat.id
-    ctx.reply(`✅ Alpha-Centauri-01 conectado. Tu ID es ${myChatId}. Empezaré a reportar aquí.`)
-})
+// Iniciar bot con manejo de errores para evitar el 409
+bot.launch().then(() => {
+    console.log("✅ Conectado a Telegram");
+}).catch(err => {
+    console.error("Error al lanzar Telegram:", err.message);
+});
 
-bot.launch()
 tradingLoop()
 setInterval(tradingLoop, 60000)
