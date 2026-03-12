@@ -373,6 +373,16 @@ setInterval(() => {
 
 }, 60000);
 
-coreLoop();
+async function coreLoop() {
+    const tokens = await scanMarket();
+
+    // Si no hay nada, no gastamos recursos ni OpenAI
+    if (!tokens || tokens.length === 0) {
+        console.log("⏳ Sin datos nuevos. Esperando al próximo ciclo...");
+        return; 
+    }
+
+    // Aquí sigue tu lógica normal...
+}
 
 console.log("Alpha-Centauri iniciado.");
