@@ -354,7 +354,13 @@ bot.command("panic", async (ctx) => {
 
 
 // --- START ---
-bot.launch();
+bot.launch({
+    dropPendingUpdates: true // Esto limpia los mensajes viejos que causan el conflicto
+}).then(() => {
+    console.log("✅ Alpha-Centauri-01 conectado a Telegram (Conflictos resueltos)");
+}).catch(err => {
+    console.error("⚠️ Error al conectar Telegram:", err.message);
+});
 
 setInterval(coreLoop, 60000);
 
