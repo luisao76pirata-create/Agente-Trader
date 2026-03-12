@@ -9,15 +9,15 @@ export async function scanMarket() {
 
     const pairs = response.data.pairs || []
 
-    const tokens = pairs
+    return pairs
         .filter(p => p.chainId === "solana")
         .filter(p => p.liquidity?.usd > 50000)
         .filter(p => p.volume?.h24 > 100000)
         .map(p => ({
             token: p.baseToken.symbol,
             price: Number(p.priceUsd),
-            volume24h: p.volume.h24
+            liquidity: p.liquidity.usd,
+            volume24h: p.volume.h24,
+            change1h: p.priceChange?.h1 || 0
         }))
-
-    return tokens
 }
