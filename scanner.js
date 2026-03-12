@@ -1,6 +1,6 @@
 import fetch from "node-fetch";
 
-const DEXSCREENER_URL = "https://api.dexscreener.com/latest/dex/pairs/solana";
+const DEXSCREENER_URL = "https://api.dexscreener.com/token-profiles/latest/v1";
 const RUGCHECK_URL = "https://api.rugcheck.xyz/v1/tokens";
 
 // Minimum thresholds to even consider a token
@@ -63,8 +63,18 @@ function preFilter(pair) {
 export async function scanMarket() {
   try {
     console.log("🔍 Scanning DexScreener...");
-    const res = await fetch(DEXSCREENER_URL, { timeout: 10000 });
-    const data = await res.json();
+    const res = await fetch(DEXSCREENER_URL, {
+  headers: {
+    "Accept": "application/json",
+    "User-Agent": "Mozilla/5.0"
+  },
+  timeout: 10000
+});
+
+const data = await res.json();
+
+// El nuevo endpoint devuelve array directamente, filtrar solo Solana
+const solanaPairs = data.filter(t => t.chainId === "solana");
 
     if (!data.pairs || data.pairs.length === 0) {
       console.log("⚠️ No pairs returned from DexScreener");
