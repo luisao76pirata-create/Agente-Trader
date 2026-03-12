@@ -1,67 +1,63 @@
-import { createAgentRuntime } from "@elizaos/core";
-import { plugin as sqlPlugin } from "@elizaos/plugin-sql";
-import telegramPlugin from "@elizaos/plugin-telegram";
-import openaiPlugin from "@elizaos/plugin-openai";
-import { readFileSync } from "fs";
+import { AgentRuntime, elizaLogger, ModelProviderName, stringToUuid, settings } from "@elizaos/core";
+import { SqliteDatabaseAdapter } from "@elizaos/adapter-sqlite";
+import { TelegramClientInterface } from "@elizaos/client-telegram";
+import { solanaPlugin } from "@elizaos/plugin-solana";
+import { bootstrapPlugin } from "@elizaos/plugin-bootstrap";
+import Database from "better-sqlite3";
 import path from "path";
-import { fileURLToPath } from "url";
+import fs from "fs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-
-if (!TELEGRAM_BOT_TOKEN) {
-  console.error("❌ ERROR: TELEGRAM_BOT_TOKEN is not set");
-  process.exit(1);
+// 1. Configuración de la Base de Datos (Para que el agente tenga memoria)
+const dbPath = path.join(process.cwd(), "data", "db.sqlite");
+if (!fs.existsSync(path.dirname(dbPath))) {
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 }
-if (!OPENAI_API_KEY) {
-  console.error("❌ ERROR: OPENAI_API_KEY is not set");
-  process.exit(1);
-}
+const dbAdapter = new SqliteDatabaseAdapter(new Database(dbPath));
 
-console.log("✅ TELEGRAM_BOT_TOKEN found");
-console.log("✅ OPENAI_API_KEY found");
-
-// Load character file
-let character;
-try {
-  const characterPath = path.join(__dirname, "characters/solana-trader.character.json");
-  const raw = readFileSync(characterPath, "utf-8");
-  character = JSON.parse(raw);
-  console.log(`✅ Character loaded: ${character.name}`);
-} catch (err) {
-  console.error("❌ ERROR loading character file:", err.message);
-  process.exit(1);
-}
-
-// Inject secrets into character
-character.settings = character.settings || {};
-character.settings.secrets = {
-  TELEGRAM_BOT_TOKEN,
-  OPENAI_API_KEY,
+// 2. Carga del Personaje (ADN del agente)
+const character = {
+    name: "Alpha-Centauri-01",
+    modelProvider: ModelProviderName.OPENAI,
+    settings: {
+        secrets: {
+            OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+            TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
+            SOLANA_PRIVATE_KEY: process.env.SOLANA_PRIVATE_KEY,
+        },
+    },
+    system: "Eres un agente financiero experto en Solana. Operas en modo simulación (DRY_RUN) para maximizar beneficios con riesgo mínimo.",
+    bio: ["Analista de DeFAI", "Experto en arbitraje", "Cazador de tendencias en X"],
+    adjectives: ["Analítico", "Preciso", "Seguro"]
 };
 
-async function main() {
-  try {
-    console.log("🚀 Starting SolanaTrader agent...");
+// 3. Creación del Runtime (El motor principal)
+async function startAgent() {
+    elizaLogger.info("🚀 Alpha-Centauri-01 iniciando el motor...");
 
-    const runtime = await createAgentRuntime({
-      character,
-      plugins: [sqlPlugin, openaiPlugin, telegramPlugin],
+    const runtime = new AgentRuntime({
+        databaseAdapter: dbAdapter,
+        token: process.env.OPENAI_API_KEY,
+        modelProvider: ModelProviderName.OPENAI,
+        character: character,
+        plugins: [solanaPlugin, bootstrapPlugin],
+        agentId: stringToUuid(character.name),
     });
 
-    console.log("✅ Agent runtime started");
+    // Inicializar el motor
+    await runtime.initialize();
 
-    process.on("SIGINT", async () => {
-      console.log("Shutting down...");
-      process.exit(0);
-    });
-
-  } catch (err) {
-    console.error("❌ ERROR starting agent:", err);
-    process.exit(1);
-  }
+    // 4. Conectar a Telegram
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+        elizaLogger.info("📱 Conectando con el Cuartel General de Telegram...");
+        const tgClient = await TelegramClientInterface.start(runtime);
+        elizaLogger.success("✅ ¡Telegram Online! Alpha-Centauri-01 te está esperando.");
+    } else {
+        elizaLogger.warn("⚠️ No se encontró TELEGRAM_BOT_TOKEN. El agente no podrá hablarte.");
+    }
 }
 
-main();
+// Arrancar el proceso
+startAgent().catch((error) => {
+    elizaLogger.error("❌ Error crítico al despertar al agente:", error);
+    process.exit(1);
+});
