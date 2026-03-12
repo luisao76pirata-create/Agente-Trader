@@ -4,150 +4,369 @@ import Database from "better-sqlite3";
 import OpenAI from "openai";
 import { scanMarket } from "./scanner.js";
 
-// --- CONFIGURACIÓN INICIAL ---
+// --- CONFIGURACIÓN ---
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const db = new Database('alpha_centauri.db');
+const db = new Database("alpha_centauri.db");
 
-// ⚠️ SUSTITUYE POR TU ID REAL DE TELEGRAM (EJ: 12345678)
-const MY_CHAT_ID = 745415554; 
+const MY_CHAT_ID = 12345678;
 
-// --- GESTIÓN DE RIESGO ($500) ---
-const TRADE_SIZE = 50; 
-const STOP_LOSS_PCT = -12;
-const TAKE_PROFIT_PCT = 25;
+// --- RISK MANAGEMENT ---
+const START_BALANCE = 500;
+const TRADE_SIZE = 50;
 
-// --- BASE DE DATOS (Memoria Permanente) ---
+const STOP_LOSS_PCT = -8;
+const TAKE_PROFIT_PCT = 30;
+
+const MAX_OPEN_TRADES = 8;
+const TRADE_COOLDOWN = 10 * 60 * 1000;
+
+let lastTradeTime = 0;
+
+// --- DATABASE ---
 db.prepare(`CREATE TABLE IF NOT EXISTS portfolio (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    token TEXT, address TEXT, entry_price REAL, exit_price REAL, 
-    pnl_usd REAL, status TEXT DEFAULT 'OPEN', timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+token TEXT,
+address TEXT,
+entry_price REAL,
+exit_price REAL,
+pnl_usd REAL,
+status TEXT DEFAULT 'OPEN',
+timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
 )`).run();
 
 db.prepare(`CREATE TABLE IF NOT EXISTS watchlist (
-    address TEXT PRIMARY KEY, token TEXT, added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+address TEXT PRIMARY KEY,
+token TEXT,
+added_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )`).run();
 
-// --- FUNCIÓN: AUDITORÍA DE IA Y SEGURIDAD ---
+
+// --- RUG CHECK ---
+function rugCheck(token) {
+
+    if (token.mintAuthority === true) return false;
+    if (token.freezeAuthority === true) return false;
+    if (token.lpLocked === false) return false;
+
+    if (token.liquidity < 25000) return false;
+    if (token.top10 > 40) return false;
+
+    return true;
+}
+
+
+// --- SIGNAL SCORE ---
+function calculateSignalScore(token) {
+
+    let score = 0;
+
+    if (token.momentum) score += 20;
+
+    if (token.ratio > 2) score += 20;
+
+    if (token.v5m > 10000) score += 20;
+
+    if (token.liquidity > 40000) score += 20;
+
+    if (token.uniqueBuyers5m > 20) score += 20;
+
+    return score;
+}
+
+
+// --- IA AUDIT ---
 async function analyzeWithAI(token) {
-    const prompt = `Analiza este token de Solana: ${token.token} ($${token.address}).
-    Mcap: $${token.mcap}, Liquidez: $${token.liquidity}, Ratio B/S: ${token.ratio.toFixed(2)}.
-    Momentum: ${token.momentum ? 'ALTO' : 'NORMAL'}.
-    ¿Es una buena oportunidad de inversión de $50 o hay Red Flags?
-    Responde en JSON: {"decision": "BUY"|"SKIP"|"ALERT", "score": 0-100, "reason": "breve", "redflags": []}`;
+
+    const prompt = `
+Analiza este token de Solana.
+
+Token: ${token.token}
+Address: ${token.address}
+
+MarketCap: $${token.mcap}
+Liquidez: $${token.liquidity}
+Ratio Buy/Sell: ${token.ratio.toFixed(2)}
+Volumen 5m: ${token.v5m}
+
+Responde JSON:
+{
+"decision":"BUY|SKIP|ALERT",
+"score":0-100,
+"reason":"breve",
+"redflags":[]
+}
+`;
 
     try {
+
+        await new Promise(r => setTimeout(r, 400));
+
         const res = await openai.chat.completions.create({
-            messages: [{ role: "system", content: "Eres Alpha-Centauri-01, un auditor DeFAI experto en Solana." }, { role: "user", content: prompt }],
-            model: "gpt-4-turbo-preview",
+
+            model: "gpt-4o-mini",
+
+            messages: [
+                {
+                    role: "system",
+                    content: "Eres un auditor experto en trading de tokens en Solana."
+                },
+                {
+                    role: "user",
+                    content: prompt
+                }
+            ],
+
             response_format: { type: "json_object" }
+
         });
+
         return JSON.parse(res.choices[0].message.content);
-    } catch (e) { return null; }
+
+    } catch (e) {
+
+        console.log("AI ERROR", e);
+        return null;
+
+    }
 }
 
-// --- FUNCIÓN: CERRAR TRADES (PnL) ---
+
+// --- CERRAR TRADE ---
 async function closeTrade(id, exitPrice, entryPrice, tokenName, reason) {
+
     const profitUsd = ((exitPrice - entryPrice) / entryPrice) * TRADE_SIZE;
-    db.prepare("UPDATE portfolio SET status = 'CLOSED', exit_price = ?, pnl_usd = ? WHERE id = ?")
-      .run(exitPrice, profitUsd, id);
-    
+
+    db.prepare(`
+    UPDATE portfolio
+    SET status='CLOSED', exit_price=?, pnl_usd=?
+    WHERE id=?
+    `).run(exitPrice, profitUsd, id);
+
     const emoji = profitUsd > 0 ? "💰" : "🛑";
-    await bot.telegram.sendMessage(MY_CHAT_ID, 
-        `${emoji} **POSICIÓN CERRADA: ${tokenName}**\n` +
-        `Motivo: ${reason}\n` +
-        `Resultado: ${profitUsd.toFixed(2)} USD (${((exitPrice - entryPrice)/entryPrice*100).toFixed(2)}%)`, 
-        { parse_mode: 'Markdown' });
+
+    await bot.telegram.sendMessage(
+        MY_CHAT_ID,
+        `${emoji} POSICIÓN CERRADA ${tokenName}
+
+Motivo: ${reason}
+Resultado: ${profitUsd.toFixed(2)} USD
+`,
+    );
 }
 
-// --- FUNCIÓN: REPORTE DE RENTABILIDAD ---
+
+// --- REPORTE ---
 async function sendReport() {
-    const stats = db.prepare("SELECT SUM(pnl_usd) as total, COUNT(*) as count FROM portfolio WHERE status = 'CLOSED'").get();
-    const open = db.prepare("SELECT COUNT(*) as count FROM portfolio WHERE status = 'OPEN'").get();
-    
-    let msg = `📊 **ESTADO DE RENTABILIDAD**\n\n`;
-    msg += `💵 PnL Realizado: \`${(stats.total || 0).toFixed(2)} USD\`\n`;
-    msg += `🔄 Trades cerrados: ${stats.count}\n`;
-    msg += `⏳ Posiciones abiertas: ${open.count}\n`;
-    msg += `🏦 Valor estimado cartera: \`$${(500 + (stats.total || 0)).toFixed(2)}\``;
-    
-    await bot.telegram.sendMessage(MY_CHAT_ID, msg, { parse_mode: 'Markdown' });
+
+    const stats = db.prepare(`
+    SELECT SUM(pnl_usd) as total, COUNT(*) as count
+    FROM portfolio
+    WHERE status='CLOSED'
+    `).get();
+
+    const open = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM portfolio
+    WHERE status='OPEN'
+    `).get();
+
+    const pnl = stats.total || 0;
+
+    const msg = `
+📊 ESTADO BOT
+
+PnL realizado: ${pnl.toFixed(2)} USD
+Trades cerrados: ${stats.count}
+Trades abiertos: ${open.count}
+
+Valor estimado: ${(START_BALANCE + pnl).toFixed(2)} USD
+`;
+
+    await bot.telegram.sendMessage(MY_CHAT_ID, msg);
 }
 
-// --- EL MOTOR PRINCIPAL (CORE LOOP) ---
+
+// --- CORE LOOP ---
 async function coreLoop() {
-    console.log("🔄 Alpha-Centauri-01: Escaneando y gestionando...");
+
+    console.log("Escaneando mercado...");
+
     const tokens = await scanMarket();
 
-    // 1. MONITOREAR STOP LOSS Y TAKE PROFIT
-    const openPositions = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
+    // --- MONITOREAR POSICIONES ---
+    const openPositions = db.prepare(`
+    SELECT *
+    FROM portfolio
+    WHERE status='OPEN'
+    `).all();
+
     for (const pos of openPositions) {
+
         const live = tokens.find(t => t.address === pos.address);
-        if (live) {
-            const change = ((live.price - pos.entry_price) / pos.entry_price) * 100;
-            if (change <= STOP_LOSS_PCT) await closeTrade(pos.id, live.price, pos.entry_price, pos.token, "Stop Loss");
-            else if (change >= TAKE_PROFIT_PCT) await closeTrade(pos.id, live.price, pos.entry_price, pos.token, "Take Profit");
-        }
+
+        if (!live) continue;
+
+        const change = ((live.price - pos.entry_price) / pos.entry_price) * 100;
+
+        if (change <= STOP_LOSS_PCT)
+            await closeTrade(pos.id, live.price, pos.entry_price, pos.token, "STOP LOSS");
+
+        else if (change >= TAKE_PROFIT_PCT)
+            await closeTrade(pos.id, live.price, pos.entry_price, pos.token, "TAKE PROFIT");
     }
 
-    // 2. VIGILAR WATCHLIST
-    const watched = db.prepare("SELECT * FROM watchlist").all();
-    for (const item of watched) {
-        const live = tokens.find(t => t.address === item.address);
-        if (live && live.momentum) {
-            bot.telegram.sendMessage(MY_CHAT_ID, `⚠️ **MOVIMIENTO EN WATCHLIST:** ${live.token}\nVolumen 5m: $${live.v5m}\nRatio B/S: ${live.ratio.toFixed(2)}`);
-        }
-    }
 
-    // 3. BUSCAR NUEVAS ENTRADAS
+    // --- BUSCAR NUEVAS ENTRADAS ---
     for (const token of tokens) {
-        const alreadyIn = db.prepare("SELECT id FROM portfolio WHERE address = ? AND status = 'OPEN'").get(token.address);
-        // Memoria: No repetir el mismo token en 24h si ya se cerró
-        const recentlyClosed = db.prepare("SELECT id FROM portfolio WHERE address = ? AND timestamp > datetime('now', '-24 hours')").get(token.address);
 
-        if (!alreadyIn && !recentlyClosed && token.momentum && token.ratio > 2) {
-            const audit = await analyzeWithAI(token);
-            if (audit && audit.decision === "BUY" && audit.score > 85) {
-                db.prepare("INSERT INTO portfolio (token, address, entry_price) VALUES (?, ?, ?)").run(token.token, token.address, token.price);
-                await bot.telegram.sendMessage(MY_CHAT_ID, `🟢 **INVERSIÓN AUTÓNOMA ($${TRADE_SIZE})**\nToken: ${token.token}\nScore IA: ${audit.score}/100\nRazon: ${audit.reason}`);
-            }
+        const alreadyIn = db.prepare(`
+        SELECT id FROM portfolio
+        WHERE address=? AND status='OPEN'
+        `).get(token.address);
+
+        const recentlyClosed = db.prepare(`
+        SELECT id FROM portfolio
+        WHERE address=? AND timestamp > datetime('now','-24 hours')
+        `).get(token.address);
+
+        if (alreadyIn || recentlyClosed) continue;
+
+        if (!rugCheck(token)) continue;
+
+        const signalScore = calculateSignalScore(token);
+
+        if (signalScore < 60) continue;
+
+        const openCount = db.prepare(`
+        SELECT COUNT(*) as count
+        FROM portfolio
+        WHERE status='OPEN'
+        `).get();
+
+        if (openCount.count >= MAX_OPEN_TRADES) continue;
+
+        if (Date.now() - lastTradeTime < TRADE_COOLDOWN) continue;
+
+        const audit = await analyzeWithAI(token);
+
+        if (audit && audit.decision === "BUY" && audit.score > 85) {
+
+            db.prepare(`
+            INSERT INTO portfolio(token,address,entry_price)
+            VALUES(?,?,?)
+            `).run(token.token, token.address, token.price);
+
+            lastTradeTime = Date.now();
+
+            await bot.telegram.sendMessage(
+                MY_CHAT_ID,
+                `🟢 NUEVO TRADE
+
+Token: ${token.token}
+Signal score: ${signalScore}
+AI score: ${audit.score}
+
+${audit.reason}
+`
+            );
         }
     }
 }
 
-// --- COMANDOS TELEGRAM ---
-bot.start((ctx) => ctx.reply("Alpha-Centauri-01 Activo. Comandos: /status, /report, /watch [dir], /panic"));
 
-bot.command('status', (ctx) => {
-    const open = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
-    if (open.length === 0) return ctx.reply("No hay posiciones abiertas.");
-    let m = "🛒 **Posiciones Actuales:**\n";
-    open.forEach(p => m += `- ${p.token}: Entrada en $${p.entry_price.toFixed(6)}\n`);
-    ctx.reply(m, { parse_mode: 'Markdown' });
+// --- TELEGRAM COMMANDS ---
+
+bot.start((ctx) => {
+
+    if (ctx.chat.id !== MY_CHAT_ID) return;
+
+    ctx.reply("Alpha-Centauri activo.");
 });
 
-bot.command('report', () => sendReport());
+bot.command("status", (ctx) => {
 
-bot.command('watch', (ctx) => {
-    const addr = ctx.message.text.split(' ')[1];
-    if (!addr) return ctx.reply("Uso: /watch [direccion]");
-    db.prepare("INSERT OR REPLACE INTO watchlist (address, token) VALUES (?, ?)").run(addr, "Vigilado");
-    ctx.reply("👀 Añadido a vigilancia.");
+    if (ctx.chat.id !== MY_CHAT_ID) return;
+
+    const open = db.prepare(`
+    SELECT *
+    FROM portfolio
+    WHERE status='OPEN'
+    `).all();
+
+    if (!open.length) return ctx.reply("No hay posiciones abiertas.");
+
+    let msg = "POSICIONES ABIERTAS\n\n";
+
+    open.forEach(p => {
+        msg += `${p.token} entrada ${p.entry_price}\n`;
+    });
+
+    ctx.reply(msg);
 });
 
-bot.command('panic', async (ctx) => {
-    const open = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
-    for (const p of open) await closeTrade(p.id, p.entry_price * 0.99, p.entry_price, p.token, "PÁNICO MANUAL");
-    ctx.reply("🛑 PÁNICO EJECUTADO. Todo cerrado.");
+bot.command("report", async (ctx) => {
+
+    if (ctx.chat.id !== MY_CHAT_ID) return;
+
+    await sendReport();
 });
 
-// --- INICIO ---
+bot.command("watch", (ctx) => {
+
+    if (ctx.chat.id !== MY_CHAT_ID) return;
+
+    const addr = ctx.message.text.split(" ")[1];
+
+    if (!addr) return ctx.reply("Uso: /watch direccion");
+
+    db.prepare(`
+    INSERT OR REPLACE INTO watchlist(address,token)
+    VALUES(?,?)
+    `).run(addr, "WATCH");
+
+    ctx.reply("Token añadido.");
+});
+
+bot.command("panic", async (ctx) => {
+
+    if (ctx.chat.id !== MY_CHAT_ID) return;
+
+    const open = db.prepare(`
+    SELECT *
+    FROM portfolio
+    WHERE status='OPEN'
+    `).all();
+
+    for (const p of open) {
+
+        await closeTrade(
+            p.id,
+            p.entry_price * 0.99,
+            p.entry_price,
+            p.token,
+            "PANIC"
+        );
+    }
+
+    ctx.reply("Todo cerrado.");
+});
+
+
+// --- START ---
 bot.launch();
-setInterval(coreLoop, 60000); // Cada minuto
-setInterval(() => { // Reporte automático a las 21:00
+
+setInterval(coreLoop, 60000);
+
+setInterval(() => {
+
     const d = new Date();
-    if (d.getHours() === 21 && d.getMinutes() === 0) sendReport();
+
+    if (d.getHours() === 21 && d.getMinutes() === 0)
+        sendReport();
+
 }, 60000);
 
 coreLoop();
-console.log("🚀 Alpha-Centauri-01: Motor encendido y listo.");
+
+console.log("Alpha-Centauri iniciado.");
