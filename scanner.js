@@ -1,157 +1,168 @@
-import axios from "axios";
+import fetch from "node-fetch";
 
-const FILTERS = {
-  minLiquidity: 20000,
-  minVolume5m: 5000,
-  minMcap: 50000,
-  maxMcap: 10000000,
-  minBuyRatio: 1.5,
-  minUniqueBuyers: 10,
-  minPriceChange5m: 3,
-  maxTop10Holdings: 20,
-};
+const DEX_API = "https://api.dexscreener.com/latest/dex/pairs/solana";
+const RUGCHECK_API = "https://api.rugcheck.xyz/v1/tokens/";
 
-const DEXSCREENER_ENDPOINTS = [
-  "https://api.dexscreener.com/token-boosts/top/v1",
-  "https://api.dexscreener.com/token-boosts/latest/v1",
-];
+let knownPools = new Set();
 
-async function checkRugCheck(tokenAddress) {
+async function getRugScore(address) {
+
   try {
-    const url = `https://api.rugcheck.xyz/v1/tokens/${tokenAddress}/report/summary`;
-    const res = await axios.get(url, { timeout: 5000 });
-    const data = res.data;
-    return {
-      score: data.score || 0,
-      mintAuthority: data.mintAuthority !== null && data.mintAuthority !== false,
-      freezeAuthority: data.freezeAuthority !== null && data.freezeAuthority !== false,
-      lpLocked: data.markets?.[0]?.lp?.lpLockedPct > 80,
-      top10: data.topHolders?.reduce((acc, h) => acc + (h.pct || 0), 0) || 100,
-      risks: data.risks?.map(r => r.name) || [],
-    };
-  } catch (e) {
-    console.log(`⚠️ RugCheck no disponible para ${tokenAddress}`);
+
+    const res = await fetch(`${RUGCHECK_API}${address}/report`);
+
+    if (!res.ok) return null;
+
+    const data = await res.json();
+
+    return data.score ?? null;
+
+  } catch {
+
     return null;
+
   }
+
 }
 
-function preFilter(pair) {
-  const liquidity = pair.liquidity?.usd || 0;
+function analyzePair(pair) {
+
   const volume5m = pair.volume?.m5 || 0;
-  const mcap = pair.fdv || 0;
-  const buys = pair.txns?.m5?.buys || 0;
-  const sells = pair.txns?.m5?.sells || 1;
-  const priceChange5m = pair.priceChange?.m5 || 0;
-  const buyRatio = buys / sells;
-  return (
-    liquidity >= FILTERS.minLiquidity &&
-    volume5m >= FILTERS.minVolume5m &&
-    mcap >= FILTERS.minMcap &&
-    mcap <= FILTERS.maxMcap &&
-    buyRatio >= FILTERS.minBuyRatio &&
-    buys >= FILTERS.minUniqueBuyers &&
-    priceChange5m >= FILTERS.minPriceChange5m
-  );
-}
+  const volume1h = pair.volume?.h1 || 0;
 
-async function getPairsForTokens(addresses) {
-  try {
-    const chunk = addresses.slice(0, 30).join(",");
-    const url = `https://api.dexscreener.com/latest/dex/tokens/${chunk}`;
-    const res = await axios.get(url, { timeout: 8000 });
-    return (res.data.pairs || []).filter(p => p.chainId === "solana");
-  } catch (e) {
-    console.log("⚠️ Error obteniendo pares:", e.message);
-    return [];
-  }
+  const buys = pair.txns?.m5?.buys || 0;
+  const sells = pair.txns?.m5?.sells || 0;
+
+  const ratio = sells === 0 ? buys : buys / sells;
+
+  const momentum =
+    volume5m > 4000 &&
+    ratio > 1.2;
+
+  const whaleSignal =
+    volume5m > 20000 &&
+    buys > sells * 1.5;
+
+  const volumeSpike =
+    volume1h > 0 &&
+    volume5m > (volume1h / 12) * 3;
+
+  return {
+    volume5m,
+    volume1h,
+    ratio,
+    momentum,
+    whaleSignal,
+    volumeSpike
+  };
+
 }
 
 export async function scanMarket() {
+
   try {
+
     console.log("🔍 Escaneando DexScreener con filtros Pro...");
 
-    let tokenAddresses = [];
+    const res = await fetch(DEX_API);
+    const data = await res.json();
 
-    for (const endpoint of DEXSCREENER_ENDPOINTS) {
-      try {
-        const res = await axios.get(endpoint, { timeout: 8000 });
-        const items = Array.isArray(res.data) ? res.data : [];
-        const solanaTokens = items
-          .filter(t => t.chainId === "solana")
-          .map(t => t.tokenAddress)
-          .filter(Boolean);
-        tokenAddresses = [...new Set([...tokenAddresses, ...solanaTokens])];
-        console.log(`📡 ${endpoint.split("/").pop()}: ${solanaTokens.length} tokens encontrados`);
-      } catch (e) {
-        console.log(`⚠️ Error en endpoint ${endpoint}: ${e.message}`);
+    if (!data.pairs) return [];
+
+    const tokens = [];
+
+    for (const pair of data.pairs) {
+
+      if (!pair.baseToken || !pair.priceUsd) continue;
+
+      const liquidity = pair.liquidity?.usd || 0;
+
+      if (liquidity < 15000) continue;
+
+      const analysis = analyzePair(pair);
+
+      let momentum = analysis.momentum;
+
+      // detectar pool nuevo
+      if (!knownPools.has(pair.pairAddress)) {
+
+        knownPools.add(pair.pairAddress);
+
+        momentum = true;
+
+        console.log("🆕 Nuevo pool:", pair.baseToken.symbol);
+
       }
-    }
 
-    if (tokenAddresses.length === 0) {
-      console.log("⚠️ No se encontraron tokens en DexScreener");
-      return [];
-    }
+      // detectar whale activity
+      if (analysis.whaleSignal) {
 
-    console.log(`📋 Total tokens únicos a analizar: ${tokenAddresses.length}`);
+        momentum = true;
 
-    const allPairs = await getPairsForTokens(tokenAddresses);
-    console.log(`📊 ${allPairs.length} pares obtenidos de DexScreener`);
+        console.log("🐋 Whale activity:", pair.baseToken.symbol);
 
-    if (allPairs.length === 0) return [];
+      }
 
-    const candidates = allPairs.filter(preFilter);
-    console.log(`✅ ${candidates.length} candidatos pasaron el pre-filtro`);
+      // detectar volume spike (tokens antiguos)
+      if (analysis.volumeSpike) {
 
-    if (candidates.length === 0) {
-      const sample = allPairs.slice(0, 3);
-      sample.forEach(p => {
-        console.log(`🔎 ${p.baseToken?.symbol}: liq=$${p.liquidity?.usd || 0} vol5m=$${p.volume?.m5 || 0} mcap=$${p.fdv || 0} buys=${p.txns?.m5?.buys || 0} change=${p.priceChange?.m5 || 0}%`);
-      });
-      return [];
-    }
+        momentum = true;
 
-    const topCandidates = candidates
-      .sort((a, b) => (b.volume?.m5 || 0) - (a.volume?.m5 || 0))
-      .slice(0, 5);
+        console.log("📈 Volume spike:", pair.baseToken.symbol);
 
-    const results = [];
+      }
 
-    for (const pair of topCandidates) {
-      const address = pair.baseToken?.address;
-      if (!address) continue;
+      // Rugcheck
+      const rugScore = await getRugScore(pair.baseToken.address);
 
-      console.log(`🛡️ Auditando ${pair.baseToken?.symbol} en RugCheck...`);
-      const rug = await checkRugCheck(address);
+      if (rugScore !== null && rugScore < 60) {
 
-      if (!rug) continue;
+        console.log(`🚫 Rug filtrado ${pair.baseToken.symbol} (${rugScore})`);
 
-      if (rug.mintAuthority || rug.freezeAuthority || !rug.lpLocked ||
-          rug.top10 > FILTERS.maxTop10Holdings || rug.score < 500) {
-        console.log(`🚫 ${pair.baseToken?.symbol} descartado (score=${rug.score}, top10=${rug.top10.toFixed(1)}%, lpLocked=${rug.lpLocked})`);
         continue;
+
       }
 
-      results.push({
-        token: pair.baseToken?.symbol,
-        address,
-        price: parseFloat(pair.priceUsd) || 0,
+      tokens.push({
+
+        token: pair.baseToken.symbol,
+
+        address: pair.baseToken.address,
+
+        price: Number(pair.priceUsd),
+
         mcap: pair.fdv || 0,
-        liquidity: pair.liquidity?.usd || 0,
-        ratio: (pair.txns?.m5?.buys || 1) / (pair.txns?.m5?.sells || 1),
-        v5m: pair.volume?.m5 || 0,
-        momentum: true,
-        url: pair.url,
-        rugcheckScore: rug.score,
+
+        liquidity: liquidity,
+
+        v5m: analysis.volume5m,
+
+        ratio: analysis.ratio,
+
+        momentum: momentum,
+
+        whale: analysis.whaleSignal,
+
+        volumeSpike: analysis.volumeSpike,
+
+        rugcheckScore: rugScore
+
       });
 
-      console.log(`✅ ${pair.baseToken?.symbol} ha pasado todas las pruebas.`);
-      await new Promise(r => setTimeout(r, 800));
     }
 
-    return results;
+    tokens.sort((a, b) => b.v5m - a.v5m);
 
-  } catch (e) {
-    console.error("❌ Error en el Scanner:", e.message);
+    console.log(`📊 ${tokens.length} candidatos pasaron el pre-filtro.`);
+
+    return tokens.slice(0, 60);
+
+  } catch (err) {
+
+    console.log("Scanner error:", err.message);
+
     return [];
+
   }
+
 }
