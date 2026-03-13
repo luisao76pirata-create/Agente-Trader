@@ -1,24 +1,26 @@
 import axios from "axios";
 
-// Configuración de tus filtros Pro
 const FILTERS = {
-  minLiquidity: 20000,      
-  minVolume5m: 5000,        
-  minMcap: 50000,           
-  maxMcap: 10000000,        
-  minBuyRatio: 1.5,         
-  minUniqueBuyers: 10,      
-  minPriceChange5m: 3,      
-  maxTop10Holdings: 20,     
+  minLiquidity: 20000,
+  minVolume5m: 5000,
+  minMcap: 50000,
+  maxMcap: 10000000,
+  minBuyRatio: 1.5,
+  minUniqueBuyers: 10,
+  minPriceChange5m: 3,
+  maxTop10Holdings: 20,
 };
 
-// Función para auditar el token en RugCheck
+const DEXSCREENER_ENDPOINTS = [
+  "https://api.dexscreener.com/token-boosts/top/v1",
+  "https://api.dexscreener.com/token-boosts/latest/v1",
+];
+
 async function checkRugCheck(tokenAddress) {
   try {
     const url = `https://api.rugcheck.xyz/v1/tokens/${tokenAddress}/report/summary`;
     const res = await axios.get(url, { timeout: 5000 });
     const data = res.data;
-
     return {
       score: data.score || 0,
       mintAuthority: data.mintAuthority !== null && data.mintAuthority !== false,
@@ -33,7 +35,6 @@ async function checkRugCheck(tokenAddress) {
   }
 }
 
-// Filtro rápido de DexScreener
 function preFilter(pair) {
   const liquidity = pair.liquidity?.usd || 0;
   const volume5m = pair.volume?.m5 || 0;
@@ -42,7 +43,6 @@ function preFilter(pair) {
   const sells = pair.txns?.m5?.sells || 1;
   const priceChange5m = pair.priceChange?.m5 || 0;
   const buyRatio = buys / sells;
-
   return (
     liquidity >= FILTERS.minLiquidity &&
     volume5m >= FILTERS.minVolume5m &&
@@ -54,22 +54,62 @@ function preFilter(pair) {
   );
 }
 
+async function getPairsForTokens(addresses) {
+  try {
+    const chunk = addresses.slice(0, 30).join(",");
+    const url = `https://api.dexscreener.com/latest/dex/tokens/${chunk}`;
+    const res = await axios.get(url, { timeout: 8000 });
+    return (res.data.pairs || []).filter(p => p.chainId === "solana");
+  } catch (e) {
+    console.log("⚠️ Error obteniendo pares:", e.message);
+    return [];
+  }
+}
+
 export async function scanMarket() {
   try {
     console.log("🔍 Escaneando DexScreener con filtros Pro...");
-    const url = "https://api.dexscreener.com/latest/dex/search?q=solana";
-    const response = await axios.get(url, { timeout: 8000 });
-    
-    const allPairs = response.data.pairs || [];
+
+    let tokenAddresses = [];
+
+    for (const endpoint of DEXSCREENER_ENDPOINTS) {
+      try {
+        const res = await axios.get(endpoint, { timeout: 8000 });
+        const items = Array.isArray(res.data) ? res.data : [];
+        const solanaTokens = items
+          .filter(t => t.chainId === "solana")
+          .map(t => t.tokenAddress)
+          .filter(Boolean);
+        tokenAddresses = [...new Set([...tokenAddresses, ...solanaTokens])];
+        console.log(`📡 ${endpoint.split("/").pop()}: ${solanaTokens.length} tokens encontrados`);
+      } catch (e) {
+        console.log(`⚠️ Error en endpoint ${endpoint}: ${e.message}`);
+      }
+    }
+
+    if (tokenAddresses.length === 0) {
+      console.log("⚠️ No se encontraron tokens en DexScreener");
+      return [];
+    }
+
+    console.log(`📋 Total tokens únicos a analizar: ${tokenAddresses.length}`);
+
+    const allPairs = await getPairsForTokens(tokenAddresses);
+    console.log(`📊 ${allPairs.length} pares obtenidos de DexScreener`);
+
     if (allPairs.length === 0) return [];
 
-    // Paso 1: Filtro rápido de métricas
-    const candidates = allPairs.filter(p => p.chainId === "solana").filter(preFilter);
-    console.log(`📊 ${candidates.length} candidatos pasaron el pre-filtro.`);
+    const candidates = allPairs.filter(preFilter);
+    console.log(`✅ ${candidates.length} candidatos pasaron el pre-filtro`);
 
-    if (candidates.length === 0) return [];
+    if (candidates.length === 0) {
+      const sample = allPairs.slice(0, 3);
+      sample.forEach(p => {
+        console.log(`🔎 ${p.baseToken?.symbol}: liq=$${p.liquidity?.usd || 0} vol5m=$${p.volume?.m5 || 0} mcap=$${p.fdv || 0} buys=${p.txns?.m5?.buys || 0} change=${p.priceChange?.m5 || 0}%`);
+      });
+      return [];
+    }
 
-    // Paso 2: RugCheck (solo a los 5 mejores por volumen para evitar bloqueos)
     const topCandidates = candidates
       .sort((a, b) => (b.volume?.m5 || 0) - (a.volume?.m5 || 0))
       .slice(0, 5);
@@ -83,10 +123,11 @@ export async function scanMarket() {
       console.log(`🛡️ Auditando ${pair.baseToken?.symbol} en RugCheck...`);
       const rug = await checkRugCheck(address);
 
-      // Filtros de seguridad críticos
       if (!rug) continue;
-      if (rug.mintAuthority || rug.freezeAuthority || !rug.lpLocked || rug.top10 > FILTERS.maxTop10Holdings || rug.score < 500) {
-        console.log(`🚫 ${pair.baseToken?.symbol} descartado por seguridad (RugCheck).`);
+
+      if (rug.mintAuthority || rug.freezeAuthority || !rug.lpLocked ||
+          rug.top10 > FILTERS.maxTop10Holdings || rug.score < 500) {
+        console.log(`🚫 ${pair.baseToken?.symbol} descartado (score=${rug.score}, top10=${rug.top10.toFixed(1)}%, lpLocked=${rug.lpLocked})`);
         continue;
       }
 
@@ -100,15 +141,15 @@ export async function scanMarket() {
         v5m: pair.volume?.m5 || 0,
         momentum: true,
         url: pair.url,
-        rugcheckScore: rug.score
+        rugcheckScore: rug.score,
       });
 
       console.log(`✅ ${pair.baseToken?.symbol} ha pasado todas las pruebas.`);
-      // Pequeña pausa para no saturar la API de RugCheck
       await new Promise(r => setTimeout(r, 800));
     }
 
     return results;
+
   } catch (e) {
     console.error("❌ Error en el Scanner:", e.message);
     return [];
