@@ -12,28 +12,30 @@ const db = new Database("alpha_centauri.db");
 const MY_CHAT_ID = 745415554;
 
 // --- PARÁMETROS BOT ---
-const TRADE_SIZE = 50;
-const STOP_LOSS_PCT = -8;
-const TAKE_PROFIT_PCT = 25;
+const TRADE_SIZE = 50; 
+const STOP_LOSS_INITIAL = -12; // Si baja de golpe al comprar
+const TRAILING_STOP_DIST = -10; // Distancia desde el pico máximo alcanzado
 
 const MAX_OPEN_TRADES = 8;
 
-// --- BASE DE DATOS ---
+// --- INICIALIZACIÓN DE BASE DE DATOS ---
 db.prepare(`CREATE TABLE IF NOT EXISTS portfolio (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-token TEXT,
-address TEXT,
-entry_price REAL,
-exit_price REAL,
-pnl_usd REAL,
-status TEXT DEFAULT 'OPEN',
-timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token TEXT, address TEXT, entry_price REAL, 
+    highest_price REAL, -- Columna para el Trailing Stop
+    exit_price REAL, 
+    pnl_usd REAL, status TEXT DEFAULT 'OPEN', timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
 )`).run();
 
+// Truco para actualizar la tabla si ya existía sin la columna highest_price
+try {
+    db.prepare("ALTER TABLE portfolio ADD COLUMN highest_price REAL").run();
+} catch (e) {
+    // Si ya existe, no hace nada
+}
+
 db.prepare(`CREATE TABLE IF NOT EXISTS watchlist (
-address TEXT PRIMARY KEY,
-token TEXT,
-added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    address TEXT PRIMARY KEY, token TEXT, added_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )`).run();
 
 // --- IA ---
@@ -87,31 +89,30 @@ return null;
 
 }
 
-// --- CERRAR TRADE ---
+// --- GESTIÓN DE TRADES ---
 async function closeTrade(id, exitPrice, entryPrice, tokenName, reason) {
-
-const profitUsd = ((exitPrice - entryPrice) / entryPrice) * TRADE_SIZE;
-
-db.prepare(`
-UPDATE portfolio
-SET status='CLOSED', exit_price=?, pnl_usd=?
-WHERE id=?
-`).run(exitPrice, profitUsd, id);
-
-const emoji = profitUsd > 0 ? "💰" : "🛑";
-
-await bot.telegram.sendMessage(
-MY_CHAT_ID,
-`${emoji} POSICIÓN CERRADA ${tokenName}
-
-Motivo: ${reason}
-Resultado: $${profitUsd.toFixed(2)} (${((exitPrice-entryPrice)/entryPrice*100).toFixed(2)}%)
-`,
-{ parse_mode: "Markdown" }
-);
-
+    const profitUsd = ((exitPrice - entryPrice) / entryPrice) * TRADE_SIZE;
+    db.prepare("UPDATE portfolio SET status = 'CLOSED', exit_price = ?, pnl_usd = ? WHERE id = ?")
+      .run(exitPrice, profitUsd, id);
+    
+    const emoji = profitUsd > 0 ? "💰" : "🛑";
+    await bot.telegram.sendMessage(MY_CHAT_ID, 
+        `${emoji} **POSICIÓN CERRADA: ${tokenName}**\n` +
+        `Motivo: ${reason}\n` +
+        `Resultado: $${profitUsd.toFixed(2)} (${((exitPrice - entryPrice)/entryPrice*100).toFixed(2)}%)`, 
+        { parse_mode: 'Markdown' });
 }
 
+async function sendReport() {
+    const stats = db.prepare("SELECT SUM(pnl_usd) as total, COUNT(*) as count FROM portfolio WHERE status = 'CLOSED'").get();
+    const open = db.prepare("SELECT count(*) as count FROM portfolio WHERE status = 'OPEN'").get();
+    const msg = `📊 **REPORTE DE RENTABILIDAD**\n\n` +
+                `💵 PnL Realizado: \`$${(stats.total || 0).toFixed(2)}\`\n` +
+                `🔄 Trades cerrados: ${stats.count}\n` +
+                `⏳ Posiciones abiertas: ${open.count}\n` +
+                `🏦 Valor Cartera: \`$${(500 + (stats.total || 0)).toFixed(2)}\``;
+    await bot.telegram.sendMessage(MY_CHAT_ID, msg, { parse_mode: 'Markdown' });
+}
 // --- REPORTE ---
 async function sendReport() {
 
@@ -140,185 +141,89 @@ await bot.telegram.sendMessage(MY_CHAT_ID, msg);
 
 }
 
-// --- CORE LOOP ---
+// --- EL MOTOR (CORE LOOP) ---
 async function coreLoop() {
+    try {
+        console.log("🔄 Escaneando mercado...");
+        const tokens = await scanMarket();
+        if (!tokens || tokens.length === 0) return;
 
-try {
+        // 1. MONITORIZACIÓN DINÁMICA (Trailing Stop Loss)
+        const openPositions = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
+        for (const pos of openPositions) {
+            const live = tokens.find(t => t.address === pos.address);
+            if (live) {
+                const currentPrice = live.price;
+                let highest = pos.highest_price || pos.entry_price;
 
-console.log("Escaneando mercado...");
+                // Actualizar el pico máximo si el precio sube
+                if (currentPrice > highest) {
+                    highest = currentPrice;
+                    db.prepare("UPDATE portfolio SET highest_price = ? WHERE id = ?").run(highest, pos.id);
+                    console.log(`📈 Nuevo máximo para ${pos.token}: $${highest}`);
+                }
 
-let tokens = await scanMarket();
+                // Cálculos de salida
+                const totalProfit = ((currentPrice - pos.entry_price) / pos.entry_price) * 100;
+                const dropFromPeak = ((currentPrice - highest) / highest) * 100;
 
-if (!tokens || tokens.length === 0) return;
+                let shouldSell = false;
+                let reason = "";
 
-// limitar tokens analizados
-tokens = tokens.slice(0, 25);
+                // Regla 1: Trailing Stop (Si ya hay algo de ganancia y cae un 10% desde el pico)
+                if (totalProfit > 2 && dropFromPeak <= TRAILING_STOP_DIST) {
+                    shouldSell = true;
+                    reason = `Trailing Stop (${dropFromPeak.toFixed(1)}% desde pico)`;
+                } 
+                // Regla 2: Stop Loss Inicial (Protección contra caída rápida inicial)
+                else if (totalProfit <= STOP_LOSS_INITIAL) {
+                    shouldSell = true;
+                    reason = `Stop Loss Inicial (${STOP_LOSS_INITIAL}%)`;
+                }
 
-// --- MONITOREAR POSICIONES ---
-const openPositions = db.prepare(`
-SELECT *
-FROM portfolio
-WHERE status='OPEN'
-`).all();
+                if (shouldSell) {
+                    await closeTrade(pos.id, currentPrice, pos.entry_price, pos.token, reason);
+                }
+            }
+        }
 
-for (const pos of openPositions) {
+        // 2. ANALIZAR NUEVAS ENTRADAS
+        for (const token of tokens) {
+            const alreadyIn = db.prepare("SELECT id FROM portfolio WHERE address = ? AND status = 'OPEN'").get(token.address);
+            const recentlyClosed = db.prepare("SELECT id FROM portfolio WHERE address = ? AND timestamp > datetime('now', '-12 hours')").get(token.address);
 
-const live = tokens.find(t => t.address === pos.address);
-
-if (!live) continue;
-
-const change = ((live.price - pos.entry_price) / pos.entry_price) * 100;
-
-if (change <= STOP_LOSS_PCT)
-await closeTrade(pos.id, live.price, pos.entry_price, pos.token, "STOP LOSS");
-
-else if (change >= TAKE_PROFIT_PCT)
-await closeTrade(pos.id, live.price, pos.entry_price, pos.token, "TAKE PROFIT");
-
-}
-
-// --- NUEVAS ENTRADAS ---
-for (const token of tokens) {
-
-const alreadyIn = db.prepare(`
-SELECT id FROM portfolio
-WHERE address=? AND status='OPEN'
-`).get(token.address);
-
-const recentlyClosed = db.prepare(`
-SELECT id FROM portfolio
-WHERE address=? AND timestamp > datetime('now','-12 hours')
-`).get(token.address);
-
-if (alreadyIn || recentlyClosed) continue;
-
-// filtro básico antes de IA
-if (
-token.liquidity < 25000 ||
-token.v5m < 5000 ||
-token.ratio < 1.2
-) {
-console.log(`Filtro descartó ${token.token}`);
-continue;
-}
-
-// limitar trades
-const openCount = db.prepare(`
-SELECT count(*) as count
-FROM portfolio
-WHERE status='OPEN'
-`).get();
-
-if (openCount.count >= MAX_OPEN_TRADES) continue;
-
-const audit = await analyzeWithAI(token);
-
-if (!audit) continue;
-
-console.log(`IA analizó ${token.token} score ${audit.score}`);
-
-if (audit.decision === "BUY" && audit.score > 85) {
-
-db.prepare(`
-INSERT INTO portfolio(token,address,entry_price)
-VALUES(?,?,?)
-`).run(token.token, token.address, token.price);
-
-await bot.telegram.sendMessage(
-MY_CHAT_ID,
-`🟢 COMPRA AUTÓNOMA ($${TRADE_SIZE})
-
-Token: ${token.token}
-Confianza IA: ${audit.score}%
-
-${audit.reason}
-`
-);
-
-}
-
-}
-
-} catch (err) {
-
-console.error("Loop error:", err.message);
-
-}
-
+            if (!alreadyIn && !recentlyClosed && token.momentum) {
+                const audit = await analyzeWithAI(token);
+                if (audit && audit.decision === "BUY" && audit.score > 85) {
+                    db.prepare("INSERT INTO portfolio (token, address, entry_price, highest_price) VALUES (?, ?, ?, ?)")
+                      .run(token.token, token.address, token.price, token.price);
+                    await bot.telegram.sendMessage(MY_CHAT_ID, `🟢 **COMPRA AUTÓNOMA ($${TRADE_SIZE})**\nToken: ${token.token}\nConfianza: ${audit.score}%\nNota: ${audit.reason}`);
+                }
+            }
+        }
+    } catch (err) { console.error("Error Loop:", err.message); }
 }
 
 // --- COMANDOS ---
-bot.command("status", (ctx) => {
-
-if (ctx.chat.id !== MY_CHAT_ID) return;
-
-const open = db.prepare(`
-SELECT *
-FROM portfolio
-WHERE status='OPEN'
-`).all();
-
-if (!open.length) return ctx.reply("No hay posiciones abiertas.");
-
-let msg = "POSICIONES ABIERTAS\n\n";
-
-open.forEach(p => {
-msg += `${p.token} entrada $${p.entry_price}\n`;
+bot.command('status', (ctx) => {
+    const open = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
+    if (open.length === 0) return ctx.reply("No hay posiciones abiertas.");
+    
+    let m = "🛒 **Cartera Activa (Trailing SL):**\n\n";
+    open.forEach(p => {
+        const highest = p.highest_price || p.entry_price;
+        const currentSL = highest * (1 + (TRAILING_STOP_DIST/100));
+        m += `• **${p.token}**\n   Entrada: $${p.entry_price.toFixed(6)}\n   Máximo: $${highest.toFixed(6)}\n   SL Actual: $${currentSL.toFixed(6)}\n\n`;
+    });
+    ctx.reply(m, { parse_mode: 'Markdown' });
 });
 
-ctx.reply(msg);
+bot.command('report', () => sendReport());
 
-});
-
-bot.command("report", (ctx) => {
-
-if (ctx.chat.id !== MY_CHAT_ID) return;
-
-sendReport();
-
-});
-
-bot.command("panic", async (ctx) => {
-
-if (ctx.chat.id !== MY_CHAT_ID) return;
-
-const open = db.prepare(`
-SELECT *
-FROM portfolio
-WHERE status='OPEN'
-`).all();
-
-for (const p of open) {
-
-await closeTrade(
-p.id,
-p.entry_price * 0.98,
-p.entry_price,
-p.token,
-"PANIC"
-);
-
-}
-
-ctx.reply("Todas las posiciones cerradas.");
-
-});
-
-bot.command("watch", (ctx) => {
-
-if (ctx.chat.id !== MY_CHAT_ID) return;
-
-const addr = ctx.message.text.split(" ")[1];
-
-if (!addr) return ctx.reply("Uso: /watch direccion");
-
-db.prepare(`
-INSERT OR REPLACE INTO watchlist(address,token)
-VALUES(?,?)
-`).run(addr, "WATCH");
-
-ctx.reply("Token añadido a vigilancia.");
-
+bot.command('panic', async (ctx) => {
+    const open = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
+    for (const p of open) await closeTrade(p.id, p.entry_price * 0.90, p.entry_price, p.token, "PÁNICO");
+    ctx.reply("🛑 PÁNICO: Todas las posiciones cerradas.");
 });
 
 // --- GESTIÓN DE INICIO Y CONEXIÓN (Anti-Error 409) ---
