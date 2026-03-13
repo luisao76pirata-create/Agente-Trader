@@ -195,11 +195,11 @@ const startBot = async () => {
 };
 
 startBot();
-setInterval(coreLoop, 120000);
+setInterval(coreLoop, 300000);
 setInterval(() => {
     const d = new Date();
     if (d.getHours() === 21 && d.getMinutes() === 0) sendReport();
-}, 120000);
+}, 300000);
 
 coreLoop();
 console.log("🤖 Alpha-Centauri patrullando...");
