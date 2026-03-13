@@ -321,20 +321,38 @@ ctx.reply("Token añadido a vigilancia.");
 
 });
 
-// --- START ---
-bot.launch({ dropPendingUpdates: true });
+// --- GESTIÓN DE INICIO Y CONEXIÓN (Anti-Error 409) ---
+const startBot = async () => {
+    try {
+        // Intentamos conectar
+        await bot.launch({ dropPendingUpdates: true });
+        console.log("🚀 Alpha-Centauri-01: Conectado a Telegram con éxito.");
+    } catch (err) {
+        // Si hay conflicto (Error 409), esperamos 5 segundos y reintentamos
+        if (err.response && err.response.error_code === 409) {
+            console.log("⚠️ Conflicto de conexión (409). Reintentando en 5 segundos...");
+            setTimeout(startBot, 5000);
+        } else {
+            console.error("❌ Error inesperado al lanzar el bot:", err.message);
+        }
+    }
+};
 
+// 1. Iniciamos el bot con el sistema de reintento
+startBot();
+
+// 2. Iniciamos el bucle de escaneo cada 60 segundos
 setInterval(coreLoop, 60000);
 
+// 3. Iniciamos el bucle del reporte diario (a las 21:00)
 setInterval(() => {
-
-const d = new Date();
-
-if (d.getHours() === 21 && d.getMinutes() === 0)
-sendReport();
-
+    const d = new Date();
+    if (d.getHours() === 21 && d.getMinutes() === 0) {
+        sendReport();
+    }
 }, 60000);
 
+// 4. Ejecutamos el primer escaneo de inmediato al arrancar
 coreLoop();
 
-console.log("Alpha-Centauri iniciado.");
+console.log("🤖 Alpha-Centauri iniciado y patrullando el mercado...");
