@@ -7,7 +7,6 @@ export async function scanMarket() {
     try {
         console.log("📡 Consultando DexScreener via Search API...");
         
-        // Usamos un User-Agent real para que DexScreener no nos bloquee
         const res = await axios.get(SEARCH_API, {
             headers: { 
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' 
@@ -21,7 +20,7 @@ export async function scanMarket() {
         }
 
         const tokens = [];
-        const pairs = res.data.pairs.slice(0, 40); // Analizamos los 40 más activos
+        const pairs = res.data.pairs.slice(0, 40); 
 
         for (const pair of pairs) {
             if (pair.chainId !== 'solana' || !pair.baseToken) continue;
@@ -29,14 +28,18 @@ export async function scanMarket() {
             const liq = pair.liquidity?.usd || 0;
             const vol5m = pair.volume?.m5 || 0;
             const vol1h = pair.volume?.h1 || 0;
+            
+            // --- FIX: Calculamos el Ratio para la IA ---
+            const buys = pair.txns?.m5?.buys || 0;
+            const sells = pair.txns?.m5?.sells || 1; // Evitamos dividir por cero
+            const ratio = buys / sells;
 
             if (liq < 15000) continue;
 
-            // LÓGICA REBIRTH: Token antiguo que despierta
-            // Si el volumen de 5m es más del 20% del volumen de 1h
-            const isSpike = vol1h > 1000 && vol5m > (vol1h * 0.20);
+            // LÓGICA REBIRTH: Bajamos un pelín el volumen a 3500 para detectar más candidatos
+            const isSpike = vol1h > 500 && vol5m > (vol1h * 0.20);
             
-            if (isSpike || vol5m > 5000) {
+            if (isSpike || vol5m > 3500) {
                 tokens.push({
                     token: pair.baseToken.symbol,
                     address: pair.baseToken.address,
@@ -44,7 +47,8 @@ export async function scanMarket() {
                     liquidity: liq,
                     mcap: pair.fdv || 0,
                     v5m: vol5m,
-                    momentum: true, // Para que index.js lo procese
+                    ratio: ratio, // 🟢 Ahora el ratio existe y no dará error
+                    momentum: true,
                     trigger: isSpike ? "📈 DESPERTAR" : "🔥 MOMENTUM"
                 });
             }
@@ -54,9 +58,8 @@ export async function scanMarket() {
         return tokens;
 
     } catch (err) {
-        // Aquí atrapamos el error del HTML (DOCTYPE) para que no rompa el bot
         if (err.response && err.response.data && typeof err.response.data === 'string' && err.response.data.includes('DOCTYPE')) {
-            console.log("🚫 Bloqueo temporal de DexScreener (Cloudflare). Esperando próximo ciclo...");
+            console.log("🚫 Bloqueo temporal (Cloudflare). Esperando...");
         } else {
             console.log("❌ Error en Scanner:", err.message);
         }
