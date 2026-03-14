@@ -20,7 +20,7 @@ export async function scanMarket() {
         }
 
         const tokens = [];
-        const pairs = res.data.pairs.slice(0, 40); 
+        const pairs = res.data.pairs.slice(0, 50); 
 
         for (const pair of pairs) {
             if (pair.chainId !== 'solana' || !pair.baseToken) continue;
@@ -34,12 +34,12 @@ export async function scanMarket() {
             const sells = pair.txns?.m5?.sells || 1; // Evitamos dividir por cero
             const ratio = buys / sells;
 
-            if (liq < 15000) continue;
+            if (liq < 10000) continue;
 
             // LÓGICA REBIRTH: Bajamos un pelín el volumen a 3500 para detectar más candidatos
-            const isSpike = vol1h > 500 && vol5m > (vol1h * 0.20);
+            const isSpike = vol1h > 500 && vol5m > (vol1h * 0.15);
             
-            if (isSpike || vol5m > 3500) {
+            if (isSpike || vol5m > 2000) {
                 tokens.push({
                     token: pair.baseToken.symbol,
                     address: pair.baseToken.address,
