@@ -1,88 +1,89 @@
 import axios from "axios";
 
-// Múltiples búsquedas para capturar tokens activos en Solana
-// en lugar de ?q=solana que devuelve el token SOL
-const SEARCH_APIS = [
-    "https://api.dexscreener.com/latest/dex/search?q=USDC%2FSOL",
-    "https://api.dexscreener.com/latest/dex/search?q=SOL%2FUSDC",
-    "https://api.dexscreener.com/latest/dex/search?q=RAY",
-    "https://api.dexscreener.com/latest/dex/search?q=BONK",
-];
-
-// Usando /report/summary en lugar de /report — mismos datos, más rápido
+// --- ENDPOINTS ---
+const PROFILES_API = "https://api.dexscreener.com/token-profiles/latest/v1";
+const PAIRS_API = "https://api.dexscreener.com/latest/dex/tokens/";
 const RUGCHECK_API = "https://api.rugcheck.xyz/v1/tokens/";
 
+/**
+ * Consulta la seguridad del token en RugCheck
+ */
 async function getRugScore(address) {
     try {
-        const res = await axios.get(`${RUGCHECK_API}${address}/report/summary`, { timeout: 5000 });
+        const res = await axios.get(`${RUGCHECK_API}${address}/report`, { timeout: 5000 });
+        // Un score de 0 es ideal, más de 500 es peligroso.
         return res.data?.score ?? null;
-    } catch { return null; }
+    } catch {
+        return null;
+    }
 }
 
+/**
+ * Scanner principal orientado a Resurrecciones (Rebirths)
+ */
 export async function scanMarket() {
     try {
-        console.log("📡 Patrullando mercado en busca de gemas...");
-
-        // Recopilar pares de todos los endpoints y deduplicar por address
-        let allPairs = [];
-        const seen = new Set();
-
-        for (const api of SEARCH_APIS) {
-            try {
-                const res = await axios.get(api, {
-                    headers: { 'User-Agent': 'Mozilla/5.0' },
-                    timeout: 15000
-                });
-                const pairs = res.data?.pairs || [];
-                for (const pair of pairs) {
-                    const addr = pair.baseToken?.address;
-                    if (addr && !seen.has(addr)) {
-                        seen.add(addr);
-                        allPairs.push(pair);
-                    }
-                }
-                console.log(`📡 ${api.split("q=")[1]}: ${pairs.length} pares`);
-            } catch (e) {
-                console.log(`⚠️ Error en endpoint ${api.split("q=")[1]}: ${e.message}`);
-            }
+        console.log("🔍 Buscando tokens con perfiles actualizados (Señal de Rebirth)...");
+        
+        // 1. Obtener tokens que acaban de actualizar info (redes, logo, etc)
+        const profileRes = await axios.get(PROFILES_API);
+        if (!profileRes.data || !Array.isArray(profileRes.data)) {
+            console.log("⚠️ No se recibieron perfiles recientes.");
+            return [];
         }
 
-        if (allPairs.length === 0) return [];
+        // Filtramos solo los de Solana y tomamos los 20 más frescos
+        const solanaProfiles = profileRes.data
+            .filter(t => t.chainId === 'solana')
+            .slice(0, 25);
 
-        // Filtrar solo pares de Solana y tomar los primeros 40
-        const pairs = allPairs
-            .filter(p => p.chainId === "solana")
-            .slice(0, 40);
+        if (solanaProfiles.length === 0) {
+            console.log("⏳ No hay perfiles de Solana actualizados ahora mismo.");
+            return [];
+        }
 
-        console.log(`🧐 Analizando ${pairs.length} pares únicos de Solana...`);
+        const addresses = solanaProfiles.map(t => t.tokenAddress).join(',');
+        
+        // 2. Obtener datos de mercado (Precio, Volumen, Liquidez)
+        const pairsRes = await axios.get(`${PAIRS_API}${addresses}`);
+        if (!pairsRes.data?.pairs) {
+            console.log("⚠️ No se encontraron datos de mercado para estos perfiles.");
+            return [];
+        }
 
         const tokens = [];
+        const pairs = pairsRes.data.pairs;
 
         for (const pair of pairs) {
-            const sym = pair.baseToken?.symbol || "";
+            const sym = pair.baseToken?.symbol || "UNK";
             const addr = pair.baseToken?.address;
 
-            // 1. FILTRO DE EXCLUSIÓN: No queremos comprar SOL ni monedas estables
-            if (["SOL", "USDC", "USDT", "WSOL"].includes(sym.toUpperCase())) continue;
+            // --- FILTRO DE EXCLUSIÓN ---
+            // Evitamos gigantes que suelen actualizar perfiles por mantenimiento
+            const giants = ["SOL", "USDC", "USDT", "RAY", "BONK", "JUP", "PYTH", "WIF"];
+            if (giants.includes(sym.toUpperCase())) continue;
 
             const liq = pair.liquidity?.usd || 0;
             const vol5m = pair.volume?.m5 || 0;
             const vol1h = pair.volume?.h1 || 0;
 
-            // 2. FILTRO DE SENSIBILIDAD
-            if (liq < 10000) continue;
+            // --- FILTROS DE TEST (SENSIBLES) ---
+            // Bajamos un poco la liquidez a $7,000 porque los rebirths suelen empezar desde abajo
+            if (liq < 7000) continue; 
 
-            const isSpike = vol1h > 500 && vol5m > (vol1h * 0.15);
-            const isMomentum = vol5m > 2000;
+            // Condición de entrada: volumen mínimo de $1,500 en 5 min o volumen sostenido
+            const hasMomentum = vol5m > 1500;
+            const isWakingUp = vol1h > 5000 && vol5m > 500;
 
-            if (isSpike || isMomentum) {
-                // 3. AUDITORÍA DE SEGURIDAD (RugCheck)
+            if (hasMomentum || isWakingUp) {
+                // 3. AUDITORÍA DE SEGURIDAD
                 const rugScore = await getRugScore(addr);
 
-                // Score < 100 significa que el riesgo es bajo/aceptable
-                if (rugScore !== null && rugScore < 100) {
-                    const buys = pair.txns?.m5?.buys || 0;
+                // Solo si el score es "bajo" (riesgo aceptable)
+                if (rugScore !== null && rugScore < 200) {
+                    const buys = pair.txns?.m5?.buys || 1;
                     const sells = pair.txns?.m5?.sells || 1;
+
                     tokens.push({
                         token: sym,
                         address: addr,
@@ -92,21 +93,21 @@ export async function scanMarket() {
                         v5m: vol5m,
                         ratio: buys / sells,
                         momentum: true,
-                        trigger: isSpike ? "📈 DESPERTAR" : "🔥 MOMENTUM",
+                        trigger: "🔄 REBIRTH/PROFILE",
                         rugcheckScore: rugScore
                     });
-                    console.log(`💎 GEMA DETECTADA: ${sym} (Vol: $${Math.round(vol5m)}) - RugScore: ${rugScore}`);
-                } else {
-                    console.log(`🚫 ${sym} descartado por riesgo RugCheck (${rugScore})`);
+                    console.log(`🌟 POSIBLE RESURRECCIÓN: ${sym} | Liq: $${Math.round(liq)} | Rug: ${rugScore}`);
+                } else if (rugScore >= 200) {
+                    console.log(`🚫 ${sym} descartado: Riesgo RugCheck alto (${rugScore})`);
                 }
             }
         }
 
-        console.log(`📊 Ciclo finalizado: ${tokens.length} candidatos para la IA.`);
+        console.log(`✅ Ciclo finalizado: ${tokens.length} candidatos encontrados.`);
         return tokens;
 
     } catch (err) {
-        console.log("❌ Error en Scanner:", err.message);
+        console.log("❌ Error en Scanner Rebirth:", err.message);
         return [];
     }
 }
