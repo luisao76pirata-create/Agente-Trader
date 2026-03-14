@@ -1,11 +1,20 @@
 import axios from "axios";
 
-const SEARCH_API = "https://api.dexscreener.com/latest/dex/search?q=solana";
+// Múltiples búsquedas para capturar tokens activos en Solana
+// en lugar de ?q=solana que devuelve el token SOL
+const SEARCH_APIS = [
+    "https://api.dexscreener.com/latest/dex/search?q=USDC%2FSOL",
+    "https://api.dexscreener.com/latest/dex/search?q=SOL%2FUSDC",
+    "https://api.dexscreener.com/latest/dex/search?q=RAY",
+    "https://api.dexscreener.com/latest/dex/search?q=BONK",
+];
+
+// Usando /report/summary en lugar de /report — mismos datos, más rápido
 const RUGCHECK_API = "https://api.rugcheck.xyz/v1/tokens/";
 
 async function getRugScore(address) {
     try {
-        const res = await axios.get(`${RUGCHECK_API}${address}/report`, { timeout: 5000 });
+        const res = await axios.get(`${RUGCHECK_API}${address}/report/summary`, { timeout: 5000 });
         return res.data?.score ?? null;
     } catch { return null; }
 }
@@ -13,16 +22,41 @@ async function getRugScore(address) {
 export async function scanMarket() {
     try {
         console.log("📡 Patrullando mercado en busca de gemas...");
-        
-        const res = await axios.get(SEARCH_API, {
-            headers: { 'User-Agent': 'Mozilla/5.0' },
-            timeout: 15000
-        });
 
-        if (!res.data?.pairs) return [];
+        // Recopilar pares de todos los endpoints y deduplicar por address
+        let allPairs = [];
+        const seen = new Set();
+
+        for (const api of SEARCH_APIS) {
+            try {
+                const res = await axios.get(api, {
+                    headers: { 'User-Agent': 'Mozilla/5.0' },
+                    timeout: 15000
+                });
+                const pairs = res.data?.pairs || [];
+                for (const pair of pairs) {
+                    const addr = pair.baseToken?.address;
+                    if (addr && !seen.has(addr)) {
+                        seen.add(addr);
+                        allPairs.push(pair);
+                    }
+                }
+                console.log(`📡 ${api.split("q=")[1]}: ${pairs.length} pares`);
+            } catch (e) {
+                console.log(`⚠️ Error en endpoint ${api.split("q=")[1]}: ${e.message}`);
+            }
+        }
+
+        if (allPairs.length === 0) return [];
+
+        // Filtrar solo pares de Solana y tomar los primeros 40
+        const pairs = allPairs
+            .filter(p => p.chainId === "solana")
+            .slice(0, 40);
+
+        console.log(`🧐 Analizando ${pairs.length} pares únicos de Solana...`);
 
         const tokens = [];
-        const pairs = res.data.pairs.slice(0, 40);
 
         for (const pair of pairs) {
             const sym = pair.baseToken?.symbol || "";
@@ -35,7 +69,7 @@ export async function scanMarket() {
             const vol5m = pair.volume?.m5 || 0;
             const vol1h = pair.volume?.h1 || 0;
 
-            // 2. FILTRO DE SENSIBILIDAD (Modo Test)
+            // 2. FILTRO DE SENSIBILIDAD
             if (liq < 10000) continue;
 
             const isSpike = vol1h > 500 && vol5m > (vol1h * 0.15);
@@ -44,12 +78,11 @@ export async function scanMarket() {
             if (isSpike || isMomentum) {
                 // 3. AUDITORÍA DE SEGURIDAD (RugCheck)
                 const rugScore = await getRugScore(addr);
-                
+
                 // Score < 100 significa que el riesgo es bajo/aceptable
                 if (rugScore !== null && rugScore < 100) {
                     const buys = pair.txns?.m5?.buys || 0;
                     const sells = pair.txns?.m5?.sells || 1;
-
                     tokens.push({
                         token: sym,
                         address: addr,
