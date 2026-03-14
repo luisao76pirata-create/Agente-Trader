@@ -1,68 +1,68 @@
 import axios from "axios";
 
 const SEARCH_API = "https://api.dexscreener.com/latest/dex/search?q=solana";
-const RUGCHECK_API = "https://api.rugcheck.xyz/v1/tokens/";
 
 export async function scanMarket() {
     try {
-        console.log("📡 Consultando DexScreener via Search API...");
+        console.log("📡 [DEBUG] Iniciando escaneo de precisión...");
         
         const res = await axios.get(SEARCH_API, {
-            headers: { 
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' 
-            },
+            headers: { 'User-Agent': 'Mozilla/5.0' },
             timeout: 15000
         });
 
         if (!res.data || !res.data.pairs) {
-            console.log("⚠️ Sin datos en la respuesta.");
+            console.log("⚠️ [DEBUG] DexScreener no devolvió pares.");
             return [];
         }
 
         const tokens = [];
-        const pairs = res.data.pairs.slice(0, 50); 
+        const pairs = res.data.pairs.slice(0, 30); // Miramos los primeros 30 para no saturar el log
+
+        console.log(`🧐 [DEBUG] Analizando ${pairs.length} pares de la búsqueda...`);
 
         for (const pair of pairs) {
-            if (pair.chainId !== 'solana' || !pair.baseToken) continue;
-
+            const sym = pair.baseToken?.symbol || "UNK";
             const liq = pair.liquidity?.usd || 0;
             const vol5m = pair.volume?.m5 || 0;
             const vol1h = pair.volume?.h1 || 0;
-            
-            // --- FIX: Calculamos el Ratio para la IA ---
-            const buys = pair.txns?.m5?.buys || 0;
-            const sells = pair.txns?.m5?.sells || 1; // Evitamos dividir por cero
-            const ratio = buys / sells;
 
-            if (liq < 10000) continue;
+            // Log de diagnóstico para entender qué está pasando
+            if (liq < 10000) {
+                // console.log(`❌ ${sym} rechazado: Liquidez baja ($${Math.round(liq)})`);
+                continue;
+            }
 
-            // LÓGICA REBIRTH: Bajamos un pelín el volumen a 3500 para detectar más candidatos
             const isSpike = vol1h > 500 && vol5m > (vol1h * 0.15);
-            
-            if (isSpike || vol5m > 2000) {
+            const isMomentum = vol5m > 2000;
+
+            if (isSpike || isMomentum) {
+                const buys = pair.txns?.m5?.buys || 0;
+                const sells = pair.txns?.m5?.sells || 1;
+                
                 tokens.push({
-                    token: pair.baseToken.symbol,
+                    token: sym,
                     address: pair.baseToken.address,
                     price: Number(pair.priceUsd),
                     liquidity: liq,
                     mcap: pair.fdv || 0,
                     v5m: vol5m,
-                    ratio: ratio, // 🟢 Ahora el ratio existe y no dará error
+                    ratio: buys / sells,
                     momentum: true,
                     trigger: isSpike ? "📈 DESPERTAR" : "🔥 MOMENTUM"
                 });
+                console.log(`✅ ${sym} PASÓ EL FILTRO! (Vol: $${vol5m})`);
+            } else {
+                // Descomenta la línea de abajo si quieres ver por qué fallan los que tienen liquidez
+                // console.log(`⚠️ ${sym} tiene liquidez ($${liq}) pero poco volumen ($${vol5m})`);
             }
         }
 
-        console.log(`✅ ${tokens.length} candidatos potenciales encontrados.`);
+        console.log(`📊 Fin del ciclo: ${tokens.length} candidatos encontrados.`);
         return tokens;
 
     } catch (err) {
-        if (err.response && err.response.data && typeof err.response.data === 'string' && err.response.data.includes('DOCTYPE')) {
-            console.log("🚫 Bloqueo temporal (Cloudflare). Esperando...");
-        } else {
-            console.log("❌ Error en Scanner:", err.message);
-        }
+        console.log("❌ Error en Scanner:", err.message);
         return [];
     }
 }
