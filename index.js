@@ -15,7 +15,10 @@ const MY_CHAT_ID = 745415554;
 const TRADE_SIZE = 50; 
 const STOP_LOSS_INITIAL = -12; 
 const TRAILING_STOP_DIST = -10; 
-const MAX_OPEN_TRADES = 8; // Límite de operaciones simultáneas
+const MAX_OPEN_TRADES = 8; 
+
+// Memoria temporal para no repetir logs de la IA cada 2 minutos sobre el mismo token
+let aiLogHistory = new Set();
 
 // --- INICIALIZACIÓN DE BASE DE DATOS ---
 db.prepare(`CREATE TABLE IF NOT EXISTS portfolio (
@@ -28,9 +31,7 @@ db.prepare(`CREATE TABLE IF NOT EXISTS portfolio (
 
 try {
     db.prepare("ALTER TABLE portfolio ADD COLUMN highest_price REAL").run();
-} catch (e) {
-    // Ya existe
-}
+} catch (e) { /* Ya existe */ }
 
 db.prepare(`CREATE TABLE IF NOT EXISTS watchlist (
     address TEXT PRIMARY KEY, token TEXT, added_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -43,8 +44,8 @@ Token: ${token.token}
 Address: ${token.address}
 MarketCap: $${token.mcap}
 Liquidez: $${token.liquidity}
-Ratio B/S: ${token.ratio.toFixed(2)}
-Volumen 5m: ${token.v5m}
+Ratio B/S: ${token.ratio ? token.ratio.toFixed(2) : "N/A"}
+Volumen 5m: $${token.v5m}
 RugCheck Score: ${token.rugcheckScore || "N/A"}
 
 Responde JSON:
@@ -67,7 +68,7 @@ Responde JSON:
         });
         return JSON.parse(res.choices[0].message.content);
     } catch (e) {
-        console.log("AI ERROR", e);
+        console.log("❌ AI ERROR:", e.message);
         return null;
     }
 }
@@ -86,7 +87,6 @@ async function closeTrade(id, exitPrice, entryPrice, tokenName, reason) {
         { parse_mode: 'Markdown' });
 }
 
-// --- REPORTE (UNIFICADO Y CORREGIDO) ---
 async function sendReport() {
     const stats = db.prepare(`SELECT SUM(pnl_usd) as total, COUNT(*) as count FROM portfolio WHERE status='CLOSED'`).get();
     const open = db.prepare(`SELECT count(*) as count FROM portfolio WHERE status='OPEN'`).get();
@@ -146,12 +146,36 @@ async function coreLoop() {
                 const recentlyClosed = db.prepare("SELECT id FROM portfolio WHERE address = ? AND timestamp > datetime('now', '-12 hours')").get(token.address);
 
                 if (!alreadyIn && !recentlyClosed && token.momentum) {
+                    
+                    // Solo logueamos el análisis una vez por token para no saturar la consola
+                    if (!aiLogHistory.has(token.address)) {
+                        console.log(`🧠 IA analizando: ${token.token}...`);
+                    }
+
                     const audit = await analyzeWithAI(token);
-                    if (audit && audit.decision === "BUY" && audit.score > 85) {
-                        db.prepare("INSERT INTO portfolio (token, address, entry_price, highest_price) VALUES (?, ?, ?, ?)")
-                          .run(token.token, token.address, token.price, token.price);
-                        await bot.telegram.sendMessage(MY_CHAT_ID, `🟢 **COMPRA AUTÓNOMA ($${TRADE_SIZE})**\nToken: ${token.token}\nConfianza: ${audit.score}%\nNota: ${audit.reason}`, { parse_mode: 'Markdown' });
-                        break; // Compra uno por ciclo para evitar ráfagas
+                    
+                    if (audit) {
+                        // Log del resultado de la IA en consola
+                        if (!aiLogHistory.has(token.address)) {
+                            console.log(`📊 Resultado IA para ${token.token}: [${audit.decision}] Score: ${audit.score}/100`);
+                            aiLogHistory.add(token.address);
+                            // Limpiamos memoria si crece mucho
+                            if (aiLogHistory.size > 50) aiLogHistory.clear();
+                        }
+
+                        // UMBRAL DE TEST: Bajamos a 70 para ver acción
+                        if (audit.decision === "BUY" && audit.score >= 70) {
+                            db.prepare("INSERT INTO portfolio (token, address, entry_price, highest_price) VALUES (?, ?, ?, ?)")
+                              .run(token.token, token.address, token.price, token.price);
+                            
+                            await bot.telegram.sendMessage(MY_CHAT_ID, 
+                                `🟢 **COMPRA EJECUTADA (Test Mode)**\n` +
+                                `Token: ${token.token}\n` +
+                                `Confianza: ${audit.score}%\n` +
+                                `Razón: ${audit.reason}`, { parse_mode: 'Markdown' });
+                            
+                            break; 
+                        }
                     }
                 }
             }
@@ -199,7 +223,7 @@ setInterval(coreLoop, 120000);
 setInterval(() => {
     const d = new Date();
     if (d.getHours() === 21 && d.getMinutes() === 0) sendReport();
-}, 120000);
+}, 60000);
 
 coreLoop();
-console.log("🤖 Alpha-Centauri patrullando...");
+console.log("🤖 Alpha-Centauri patrullando con sensibilidad de IA ajustada (70%)...");
