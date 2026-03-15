@@ -5,13 +5,15 @@ const PROFILES_API = "https://api.dexscreener.com/token-profiles/latest/v1";
 const PAIRS_API = "https://api.dexscreener.com/latest/dex/tokens/";
 const RUGCHECK_API = "https://api.rugcheck.xyz/v1/tokens/";
 
+// --- MEMORIA DE SCAMS (Para no saturar el log) ---
+let mutedScams = new Set();
+
 /**
  * Consulta la seguridad del token en RugCheck
  */
 async function getRugScore(address) {
     try {
         const res = await axios.get(`${RUGCHECK_API}${address}/report`, { timeout: 5000 });
-        // Un score de 0 es ideal, más de 500 es peligroso.
         return res.data?.score ?? null;
     } catch {
         return null;
@@ -25,29 +27,28 @@ export async function scanMarket() {
     try {
         console.log("🔍 Buscando tokens con perfiles actualizados (Señal de Rebirth)...");
         
-        // 1. Obtener tokens que acaban de actualizar info (redes, logo, etc)
+        // 1. Obtener tokens que acaban de actualizar info
         const profileRes = await axios.get(PROFILES_API);
         if (!profileRes.data || !Array.isArray(profileRes.data)) {
             console.log("⚠️ No se recibieron perfiles recientes.");
             return [];
         }
 
-        // Filtramos solo los de Solana y tomamos los 20 más frescos
         const solanaProfiles = profileRes.data
             .filter(t => t.chainId === 'solana')
             .slice(0, 25);
 
         if (solanaProfiles.length === 0) {
-            console.log("⏳ No hay perfiles de Solana actualizados ahora mismo.");
+            console.log("⏳ No hay perfiles de Solana actualizados.");
             return [];
         }
 
         const addresses = solanaProfiles.map(t => t.tokenAddress).join(',');
         
-        // 2. Obtener datos de mercado (Precio, Volumen, Liquidez)
+        // 2. Obtener datos de mercado
         const pairsRes = await axios.get(`${PAIRS_API}${addresses}`);
         if (!pairsRes.data?.pairs) {
-            console.log("⚠️ No se encontraron datos de mercado para estos perfiles.");
+            console.log("⚠️ No hay datos de mercado disponibles.");
             return [];
         }
 
@@ -58,8 +59,7 @@ export async function scanMarket() {
             const sym = pair.baseToken?.symbol || "UNK";
             const addr = pair.baseToken?.address;
 
-            // --- FILTRO DE EXCLUSIÓN ---
-            // Evitamos gigantes que suelen actualizar perfiles por mantenimiento
+            // Filtro de Gigantes
             const giants = ["SOL", "USDC", "USDT", "RAY", "BONK", "JUP", "PYTH", "WIF"];
             if (giants.includes(sym.toUpperCase())) continue;
 
@@ -67,19 +67,16 @@ export async function scanMarket() {
             const vol5m = pair.volume?.m5 || 0;
             const vol1h = pair.volume?.h1 || 0;
 
-            // --- FILTROS DE TEST (SENSIBLES) ---
-            // Bajamos un poco la liquidez a $7,000 porque los rebirths suelen empezar desde abajo
+            // Filtros de Test
             if (liq < 7000) continue; 
 
-            // Condición de entrada: volumen mínimo de $1,500 en 5 min o volumen sostenido
             const hasMomentum = vol5m > 1500;
             const isWakingUp = vol1h > 5000 && vol5m > 500;
 
             if (hasMomentum || isWakingUp) {
-                // 3. AUDITORÍA DE SEGURIDAD
+                // 3. Auditoría RugCheck
                 const rugScore = await getRugScore(addr);
 
-                // Solo si el score es "bajo" (riesgo aceptable)
                 if (rugScore !== null && rugScore < 200) {
                     const buys = pair.txns?.m5?.buys || 1;
                     const sells = pair.txns?.m5?.sells || 1;
@@ -97,8 +94,16 @@ export async function scanMarket() {
                         rugcheckScore: rugScore
                     });
                     console.log(`🌟 POSIBLE RESURRECCIÓN: ${sym} | Liq: $${Math.round(liq)} | Rug: ${rugScore}`);
-                } else if (rugScore >= 200) {
-                    console.log(`🚫 ${sym} descartado: Riesgo RugCheck alto (${rugScore})`);
+                } 
+                // --- NUEVA LÓGICA DE LOGS SILENCIOSOS ---
+                else if (rugScore >= 200) {
+                    if (!mutedScams.has(addr)) {
+                        console.log(`🚫 ${sym} descartado: Riesgo RugCheck alto (${rugScore}). Silenciando...`);
+                        mutedScams.add(addr);
+                        
+                        // Limpieza de seguridad: si acumulamos 200 scams, reseteamos para no gastar RAM
+                        if (mutedScams.size > 200) mutedScams.clear();
+                    }
                 }
             }
         }
