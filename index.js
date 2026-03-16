@@ -139,34 +139,37 @@ async function coreLoop() {
         }
 
         // 2. ANALIZAR NUEVAS ENTRADAS
+        // 2. ANALIZAR NUEVAS ENTRADAS
         if (openPositions.length < MAX_OPEN_TRADES) {
             for (const token of tokens) {
+                // Comprobamos si ya está abierto o si se cerró hace poco (Cooldown de 4h es suficiente)
                 const alreadyIn = db.prepare("SELECT id FROM portfolio WHERE address = ? AND status = 'OPEN'").get(token.address);
-                // Cooldown solo para tokens ya comprados y cerrados (no para simples detecciones)
-                const recentlyClosed = db.prepare("SELECT id FROM portfolio WHERE address = ? AND status = 'CLOSED' AND timestamp > datetime('now', '-12 hours')").get(token.address);
+                const recentlyClosed = db.prepare("SELECT id FROM portfolio WHERE address = ? AND status = 'CLOSED' AND timestamp > datetime('now', '-4 hours')").get(token.address);
 
-                if (!alreadyIn && !recentlyClosed && token.momentum) {
+                if (!alreadyIn && !recentlyClosed) {
                     console.log(`🧠 IA analizando: ${token.token}...`);
                     const audit = await analyzeWithAI(token);
-                    console.log(`📊 Resultado IA para ${token.token}: [${audit?.decision}] Score: ${audit?.score}/100`);
+                    
+                    if (audit) {
+                        console.log(`📊 Resultado IA para ${token.token}: [${audit.decision}] Score: ${audit.score}/100`);
 
-                    // UMBRAL BAJADO A 60 para permitir más entradas
-                    if (audit && audit.decision === "BUY" && audit.score > 60) {
-                        db.prepare("INSERT INTO portfolio (token, address, entry_price, highest_price) VALUES (?, ?, ?, ?)")
-                          .run(token.token, token.address, token.price, token.price);
-                        await bot.telegram.sendMessage(MY_CHAT_ID, 
-                            `🟢 **COMPRA AUTÓNOMA ($${TRADE_SIZE})**\n` +
-                            `Token: ${token.token}\n` +
-                            `Confianza: ${audit.score}%\n` +
-                            `Nota: ${audit.reason}`, 
-                            { parse_mode: 'Markdown' });
-                        break;
+                        // Mantenemos tu umbral de 60 para captar el movimiento de la tarde
+                        if (audit.decision === "BUY" && audit.score > 60) {
+                            db.prepare("INSERT INTO portfolio (token, address, entry_price, highest_price) VALUES (?, ?, ?, ?)")
+                              .run(token.token, token.address, token.price, token.price);
+                            
+                            await bot.telegram.sendMessage(MY_CHAT_ID, 
+                                `🟢 **COMPRA AUTÓNOMA ($${TRADE_SIZE})**\n` +
+                                `Token: ${token.token}\n` +
+                                `Confianza: ${audit.score}%\n` +
+                                `Nota: ${audit.reason}`, 
+                                { parse_mode: 'Markdown' });
+                            break; 
+                        }
                     }
                 }
             }
         }
-    } catch (err) { console.error("Error Loop:", err.message); }
-}
 
 // --- COMANDOS ---
 bot.command('status', (ctx) => {
