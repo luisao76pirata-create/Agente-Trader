@@ -20,20 +20,22 @@ console.log("🎬 Iniciando motor Alpha-Centauri...");
 console.log("📅 Hora actual:", new Date().toLocaleString());
 
 const MY_CHAT_ID = 745415554;
+const WEBHOOK_URL = "https://eliza-production-567e.up.railway.app";
+const PORT = 8080;
 
 // --- PARÁMETROS BOT ---
-const TRADE_SIZE = 50; 
-const STOP_LOSS_INITIAL = -12; 
-const TRAILING_STOP_DIST = -10; 
+const TRADE_SIZE = 50;
+const STOP_LOSS_INITIAL = -12;
+const TRAILING_STOP_DIST = -10;
 const MAX_OPEN_TRADES = 8;
 const MCAP_LIMIT_EXIT = 900000;
 
 // --- INICIALIZACIÓN DE BASE DE DATOS ---
 db.prepare(`CREATE TABLE IF NOT EXISTS portfolio (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    token TEXT, address TEXT, entry_price REAL, 
-    highest_price REAL, 
-    exit_price REAL, 
+    token TEXT, address TEXT, entry_price REAL,
+    highest_price REAL,
+    exit_price REAL,
     pnl_usd REAL, status TEXT DEFAULT 'OPEN', timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
 )`).run();
 
@@ -43,9 +45,8 @@ if (!tableInfo.some(col => col.name === 'highest_price')) {
 }
 
 console.log("✅ Tablas DB OK");
-console.log("✅ Todo listo, llamando startBot...");
 
-// --- IA (PROMPT DE ACUMULACIÓN + IA AGENTS) ---
+// --- IA ---
 async function analyzeWithAI(token) {
     const prompt = `Analiza este token de Solana para una posible inversión.
 Trigger: ${token.trigger}
@@ -63,7 +64,7 @@ Responde estrictamente en JSON:
 "decision":"BUY|SKIP",
 "score":0-100,
 "reason":"explicación técnica breve",
-"isAccumulation": true/false
+"isAccumulation": true
 }`;
 
     try {
@@ -87,12 +88,12 @@ async function closeTrade(id, exitPrice, entryPrice, tokenName, reason) {
     const profitUsd = ((exitPrice - entryPrice) / entryPrice) * TRADE_SIZE;
     db.prepare("UPDATE portfolio SET status = 'CLOSED', exit_price = ?, pnl_usd = ? WHERE id = ?")
       .run(exitPrice, profitUsd, id);
-    
+
     const emoji = profitUsd > 0 ? "💰" : "🛑";
-    await bot.telegram.sendMessage(MY_CHAT_ID, 
+    await bot.telegram.sendMessage(MY_CHAT_ID,
         `${emoji} **POSICIÓN CERRADA: ${tokenName}**\n` +
         `Motivo: ${reason}\n` +
-        `Resultado: $${profitUsd.toFixed(2)} (${((exitPrice - entryPrice)/entryPrice*100).toFixed(2)}%)`, 
+        `Resultado: $${profitUsd.toFixed(2)} (${((exitPrice - entryPrice)/entryPrice*100).toFixed(2)}%)`,
         { parse_mode: 'Markdown' });
 }
 
@@ -100,7 +101,7 @@ async function sendReport() {
     try {
         const stats = db.prepare(`SELECT SUM(pnl_usd) as total, COUNT(*) as count FROM portfolio WHERE status='CLOSED'`).get();
         const open = db.prepare(`SELECT count(*) as count FROM portfolio WHERE status='OPEN'`).get();
-        
+
         const msg = `📊 **REPORTE ALPHA-CENTAURI**\n\n` +
                     `💵 PnL Realizado: \`$${(stats.total || 0).toFixed(2)}\`\n` +
                     `🔄 Trades cerrados: ${stats.count}\n` +
@@ -111,31 +112,30 @@ async function sendReport() {
     } catch (e) { console.error("Error Report:", e.message); }
 }
 
-// --- EL MOTOR (CORE LOOP) ---
+// --- CORE LOOP ---
 async function coreLoop() {
     const timestamp = new Date().toLocaleTimeString();
     try {
         console.log(`\n[${timestamp}] 🔄 Escaneando mercado...`);
         const tokens = await scanMarket();
-        
+
         if (!tokens || tokens.length === 0) {
-            console.log(`[${timestamp}] ℹ️ Sin candidatos que pasen los filtros de Scanner.`);
+            console.log(`[${timestamp}] ℹ️ Sin candidatos.`);
             return;
         }
 
         const openPositions = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
 
-        // 1. MONITORIZACIÓN DINÁMICA DE TRADES ABIERTOS
+        // 1. MONITORIZACIÓN
         for (const pos of openPositions) {
             const live = tokens.find(t => t.address === pos.address);
             if (live) {
                 const currentPrice = live.price;
                 const currentMCAP = live.mcap;
 
-                // --- NUEVA REGLA: VENTA POR MURO DE 900K ---
                 if (currentMCAP >= MCAP_LIMIT_EXIT) {
                     await closeTrade(pos.id, currentPrice, pos.entry_price, pos.token, `Muro Psicológico (${(currentMCAP/1000).toFixed(0)}k MCAP)`);
-                    continue; // Saltamos al siguiente token
+                    continue;
                 }
 
                 let highest = Math.max(pos.highest_price || 0, currentPrice);
@@ -154,7 +154,7 @@ async function coreLoop() {
             }
         }
 
-        // 2. ANALIZAR NUEVAS ENTRADAS
+        // 2. NUEVAS ENTRADAS
         if (openPositions.length < MAX_OPEN_TRADES) {
             for (const token of tokens) {
                 const alreadyIn = db.prepare("SELECT id FROM portfolio WHERE address = ? AND status = 'OPEN'").get(token.address);
@@ -163,36 +163,36 @@ async function coreLoop() {
                 if (!alreadyIn && !recentlyClosed) {
                     console.log(`🧠 [${token.token}] Analizando con IA...`);
                     const audit = await analyzeWithAI(token);
-                    
+
                     if (audit && audit.decision === "BUY" && audit.score > 60) {
                         console.log(`✅ COMPRA: ${token.token} (Score: ${audit.score})`);
                         db.prepare("INSERT INTO portfolio (token, address, entry_price, highest_price) VALUES (?, ?, ?, ?)")
                           .run(token.token, token.address, token.price, token.price);
-                        
-                        await bot.telegram.sendMessage(MY_CHAT_ID, 
+
+                        await bot.telegram.sendMessage(MY_CHAT_ID,
                             `🟢 **COMPRA AUTÓNOMA ($${TRADE_SIZE})**\n` +
                             `Token: ${token.token}\n` +
                             `Confianza: ${audit.score}%\n` +
-                            `Nota: ${audit.reason}`, 
+                            `Nota: ${audit.reason}`,
                             { parse_mode: 'Markdown' });
-                        break; 
+                        break;
                     } else if (audit) {
-                        console.log(`📊 [${token.token}] Veredicto IA: SKIP (Score: ${audit.score})`);
+                        console.log(`📊 [${token.token}] SKIP (Score: ${audit.score})`);
                     }
                 }
             }
         }
         console.log(`[${timestamp}] ✅ Patrulla completada.`);
-    } catch (err) { 
-        console.error(`[${timestamp}] ❌ Error en Loop:`, err.message); 
+    } catch (err) {
+        console.error(`[${timestamp}] ❌ Error en Loop:`, err.message);
     }
 }
 
-// --- COMANDOS TELEGRAM ---
+// --- COMANDOS ---
 bot.command('status', (ctx) => {
     const open = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
     if (open.length === 0) return ctx.reply("🛒 Cartera vacía.");
-    
+
     let m = "🛒 **Cartera Activa:**\n\n";
     open.forEach(p => {
         const highest = p.highest_price || p.entry_price;
@@ -207,16 +207,13 @@ bot.command('report', () => sendReport());
 bot.command('balance', async (ctx) => {
     try {
         const response = await axios.post("https://api.mainnet-beta.solana.com", {
-            jsonrpc: "2.0",
-            id: 1,
-            method: "getBalance",
+            jsonrpc: "2.0", id: 1, method: "getBalance",
             params: [process.env.SOLANA_PUBLIC_KEY]
         });
-        const lamports = response.data.result.value;
-        const sol = lamports / 1000000000;
-        ctx.reply(`💰 **Saldo Actual en Cartera:**\n\n\`${sol.toFixed(4)} SOL\``, { parse_mode: 'Markdown' });
+        const sol = response.data.result.value / 1000000000;
+        ctx.reply(`💰 **Saldo Actual:**\n\n\`${sol.toFixed(4)} SOL\``, { parse_mode: 'Markdown' });
     } catch (e) {
-        ctx.reply("❌ Error al consultar saldo en la red de Solana.");
+        ctx.reply("❌ Error al consultar saldo.");
     }
 });
 
@@ -226,25 +223,31 @@ bot.command('panic', async (ctx) => {
     ctx.reply("🛑 PÁNICO: Todas las posiciones cerradas.");
 });
 
-// --- INICIO DEL SISTEMA ---
+// --- INICIO CON WEBHOOK ---
 const startBot = async () => {
-    console.log("✅ startBot() ejecutándose...");
     try {
-        console.log("✅ Llamando bot.launch...");
-        await bot.launch({ dropPendingUpdates: true });
-        console.log("🚀 Alpha-Centauri-01: Sistema Online.");
+        console.log("✅ startBot() ejecutándose...");
+
+        // Configurar webhook
+        await bot.telegram.setWebhook(`${WEBHOOK_URL}/webhook`);
+        console.log(`✅ Webhook configurado: ${WEBHOOK_URL}/webhook`);
+
+        // Arrancar servidor express para recibir updates
+        bot.startWebhook("/webhook", null, PORT);
+        console.log(`🚀 Alpha-Centauri-01: Online en puerto ${PORT}`);
+
+        // Arrancar el core loop
         coreLoop();
         setInterval(coreLoop, 120000);
         setInterval(() => {
             const d = new Date();
             if (d.getHours() === 21 && d.getMinutes() === 0) sendReport();
         }, 60000);
+
     } catch (err) {
         console.error("⚠️ Error inicio:", err.message);
-        if (err.response?.error_code === 409) {
-            console.log("⏳ Esperando 30s antes de reintentar...");
-            await new Promise(r => setTimeout(r, 30000));
-        }
-        startBot();
+        setTimeout(startBot, 5000);
     }
 };
+
+startBot();
