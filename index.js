@@ -138,7 +138,7 @@ async function coreLoop() {
             }
         }
         // 2. ANALIZAR NUEVAS ENTRADAS
-        if (openPositions.length < MAX_OPEN_TRADES) {
+      if (openPositions.length < MAX_OPEN_TRADES) {
             for (const token of tokens) {
                 // Comprobamos si ya está abierto o si se cerró hace poco (Cooldown de 4h es suficiente)
                 const alreadyIn = db.prepare("SELECT id FROM portfolio WHERE address = ? AND status = 'OPEN'").get(token.address);
@@ -168,7 +168,6 @@ async function coreLoop() {
                 }
             }
         }
-
 // --- COMANDOS ---
 bot.command('status', (ctx) => {
     const open = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
