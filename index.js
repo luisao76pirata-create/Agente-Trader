@@ -1,5 +1,3 @@
-
-
 import "dotenv/config";
 import { Telegraf } from "telegraf";
 import Database from "better-sqlite3";
