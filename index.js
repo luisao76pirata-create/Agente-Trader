@@ -137,8 +137,6 @@ async function coreLoop() {
                 if (shouldSell) await closeTrade(pos.id, currentPrice, pos.entry_price, pos.token, reason);
             }
         }
-
-        // 2. ANALIZAR NUEVAS ENTRADAS
         // 2. ANALIZAR NUEVAS ENTRADAS
         if (openPositions.length < MAX_OPEN_TRADES) {
             for (const token of tokens) {
