@@ -164,7 +164,7 @@ async function coreLoop() {
                         }
 
                         // UMBRAL DE TEST: Bajamos a 70 para ver acción
-                        if (audit.decision === "BUY" && audit.score >= 70) {
+                        if (audit.decision === "BUY" && audit.score >= 60) {
                             db.prepare("INSERT INTO portfolio (token, address, entry_price, highest_price) VALUES (?, ?, ?, ?)")
                               .run(token.token, token.address, token.price, token.price);
                             
