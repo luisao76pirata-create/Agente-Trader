@@ -26,7 +26,7 @@ const TRADE_SIZE = 50;
 const STOP_LOSS_INITIAL = -12; 
 const TRAILING_STOP_DIST = -10; 
 const MAX_OPEN_TRADES = 8;
-const MCAP_LIMIT_EXIT = 900000; // 🎯 Muro psicológico de los 900K
+const MCAP_LIMIT_EXIT = 900000;
 
 // --- INICIALIZACIÓN DE BASE DE DATOS ---
 db.prepare(`CREATE TABLE IF NOT EXISTS portfolio (
@@ -37,11 +37,13 @@ db.prepare(`CREATE TABLE IF NOT EXISTS portfolio (
     pnl_usd REAL, status TEXT DEFAULT 'OPEN', timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
 )`).run();
 
-// Verificar si la columna highest_price existe, si no, crearla
 const tableInfo = db.prepare("PRAGMA table_info(portfolio)").all();
 if (!tableInfo.some(col => col.name === 'highest_price')) {
     db.prepare("ALTER TABLE portfolio ADD COLUMN highest_price REAL").run();
 }
+
+console.log("✅ Tablas DB OK");
+console.log("✅ Todo listo, llamando startBot...");
 
 // --- IA (PROMPT DE ACUMULACIÓN + IA AGENTS) ---
 async function analyzeWithAI(token) {
