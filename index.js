@@ -19,11 +19,6 @@ console.log("✅ SQLite OK");
 console.log("🎬 Iniciando motor Alpha-Centauri...");
 console.log("📅 Hora actual:", new Date().toLocaleString());
 
-// --- CONFIGURACIÓN ---
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const db = new Database("alpha_centauri.db");
-
 const MY_CHAT_ID = 745415554;
 
 // --- PARÁMETROS BOT ---
