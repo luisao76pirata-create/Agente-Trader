@@ -1,5 +1,4 @@
-console.log("🎬 Iniciando motor Alpha-Centauri...");
-console.log("📅 Hora actual:", new Date().toLocaleString());
+
 
 import "dotenv/config";
 import { Telegraf } from "telegraf";
@@ -7,6 +6,10 @@ import Database from "better-sqlite3";
 import OpenAI from "openai";
 import axios from "axios"; // Necesario para el balance
 import { scanMarket } from "./scanner.js";
+
+// ✅ AHORA SÍ — los logs van después de los imports
+console.log("🎬 Iniciando motor Alpha-Centauri...");
+console.log("📅 Hora actual:", new Date().toLocaleString());
 
 // --- CONFIGURACIÓN ---
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
