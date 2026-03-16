@@ -2,10 +2,20 @@ import "dotenv/config";
 import { Telegraf } from "telegraf";
 import Database from "better-sqlite3";
 import OpenAI from "openai";
-import axios from "axios"; // Necesario para el balance
+import axios from "axios";
 import { scanMarket } from "./scanner.js";
 
-// ✅ AHORA SÍ — los logs van después de los imports
+console.log("✅ Imports OK");
+
+const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+console.log("✅ Telegraf OK");
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+console.log("✅ OpenAI OK");
+
+const db = new Database("alpha_centauri.db");
+console.log("✅ SQLite OK");
+
 console.log("🎬 Iniciando motor Alpha-Centauri...");
 console.log("📅 Hora actual:", new Date().toLocaleString());
 
