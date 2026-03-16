@@ -24,7 +24,7 @@ async function getRugScore(address) {
 }
 
 /**
- * Scanner principal: Rebirths + IA Agents
+ * Scanner principal: Rebirths + IA Agents (CORREGIDO)
  */
 export async function scanMarket() {
     try {
@@ -39,7 +39,7 @@ export async function scanMarket() {
 
         const solanaProfiles = profileRes.data
             .filter(t => t.chainId === 'solana')
-            .slice(0, 30); // Ampliamos un poco el rango para no perdernos nada
+            .slice(0, 30); 
 
         if (solanaProfiles.length === 0) {
             console.log("⏳ No hay perfiles de Solana actualizados.");
@@ -75,14 +75,15 @@ export async function scanMarket() {
             const fullText = (name + " " + sym).toUpperCase();
             const isAIAgent = AI_KEYWORDS.some(word => fullText.includes(word));
 
-            // Filtros dinámicos: Los Agentes de IA suelen tener menos liquidez inicial pero más interés
-            const minLiq = isAIAgent ? 6000 : 7000;
+            // --- FILTROS DINÁMICOS CORREGIDOS ---
+            const minLiq = isAIAgent ? 6000 : 8000; // Si es Agent, permitimos $6k, si es Rebirth $8k
             const volThreshold = isAIAgent ? 1000 : 1500;
 
             const hasMomentum = vol5m > volThreshold;
             const isWakingUp = vol1h > 5000 && vol5m > 500;
 
-            if (hasMomentum || isWakingUp) {
+            // FIX: Validamos que tenga liquidez REAL antes de disparar el análisis
+            if ((hasMomentum || isWakingUp) && liq >= minLiq) {
                 // 3. Auditoría RugCheck
                 const rugScore = await getRugScore(addr);
 
