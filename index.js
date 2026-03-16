@@ -1,3 +1,6 @@
+console.log("🎬 Iniciando motor Alpha-Centauri...");
+console.log("📅 Hora actual:", new Date().toLocaleString());
+
 import "dotenv/config";
 import { Telegraf } from "telegraf";
 import Database from "better-sqlite3";
