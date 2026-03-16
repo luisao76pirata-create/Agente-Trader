@@ -5,6 +5,7 @@ import "dotenv/config";
 import { Telegraf } from "telegraf";
 import Database from "better-sqlite3";
 import OpenAI from "openai";
+import axios from "axios"; // Necesario para el balance
 import { scanMarket } from "./scanner.js";
 
 // --- CONFIGURACIÓN ---
@@ -19,6 +20,7 @@ const TRADE_SIZE = 50;
 const STOP_LOSS_INITIAL = -12; 
 const TRAILING_STOP_DIST = -10; 
 const MAX_OPEN_TRADES = 8;
+const MCAP_LIMIT_EXIT = 900000; // 🎯 Muro psicológico de los 900K
 
 // --- INICIALIZACIÓN DE BASE DE DATOS ---
 db.prepare(`CREATE TABLE IF NOT EXISTS portfolio (
@@ -120,8 +122,15 @@ async function coreLoop() {
             const live = tokens.find(t => t.address === pos.address);
             if (live) {
                 const currentPrice = live.price;
-                let highest = Math.max(pos.highest_price || 0, currentPrice);
+                const currentMCAP = live.mcap;
 
+                // --- NUEVA REGLA: VENTA POR MURO DE 900K ---
+                if (currentMCAP >= MCAP_LIMIT_EXIT) {
+                    await closeTrade(pos.id, currentPrice, pos.entry_price, pos.token, `Muro Psicológico (${(currentMCAP/1000).toFixed(0)}k MCAP)`);
+                    continue; // Saltamos al siguiente token
+                }
+
+                let highest = Math.max(pos.highest_price || 0, currentPrice);
                 if (highest > (pos.highest_price || 0)) {
                     db.prepare("UPDATE portfolio SET highest_price = ? WHERE id = ?").run(highest, pos.id);
                 }
@@ -187,6 +196,22 @@ bot.command('status', (ctx) => {
 
 bot.command('report', () => sendReport());
 
+bot.command('balance', async (ctx) => {
+    try {
+        const response = await axios.post("https://api.mainnet-beta.solana.com", {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "getBalance",
+            params: [process.env.SOLANA_PUBLIC_KEY]
+        });
+        const lamports = response.data.result.value;
+        const sol = lamports / 1000000000;
+        ctx.reply(`💰 **Saldo Actual en Cartera:**\n\n\`${sol.toFixed(4)} SOL\``, { parse_mode: 'Markdown' });
+    } catch (e) {
+        ctx.reply("❌ Error al consultar saldo en la red de Solana.");
+    }
+});
+
 bot.command('panic', async (ctx) => {
     const open = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
     for (const p of open) await closeTrade(p.id, p.entry_price * 0.90, p.entry_price, p.token, "PÁNICO");
@@ -199,13 +224,9 @@ const startBot = async () => {
         await bot.launch({ dropPendingUpdates: true });
         console.log("🚀 Alpha-Centauri-01: Sistema Online y Patrullando.");
         
-        // Ejecución inmediata del primer ciclo
         coreLoop();
-        
-        // Intervalo de escaneo cada 2 minutos
         setInterval(coreLoop, 120000);
 
-        // Reporte automático diario a las 21:00
         setInterval(() => {
             const d = new Date();
             if (d.getHours() === 21 && d.getMinutes() === 0) sendReport();
