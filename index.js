@@ -228,18 +228,17 @@ bot.command('panic', async (ctx) => {
 
 // --- INICIO DEL SISTEMA ---
 const startBot = async () => {
+    console.log("✅ startBot() ejecutándose...");
     try {
+        console.log("✅ Llamando bot.launch...");
         await bot.launch({ dropPendingUpdates: true });
-        console.log("🚀 Alpha-Centauri-01: Sistema Online y Patrullando.");
-        
+        console.log("🚀 Alpha-Centauri-01: Sistema Online.");
         coreLoop();
         setInterval(coreLoop, 120000);
-
         setInterval(() => {
             const d = new Date();
             if (d.getHours() === 21 && d.getMinutes() === 0) sendReport();
         }, 60000);
-
     } catch (err) {
         console.error("⚠️ Error inicio:", err.message);
         setTimeout(startBot, 5000);
