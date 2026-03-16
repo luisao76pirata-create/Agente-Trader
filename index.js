@@ -36,33 +36,37 @@ db.prepare(`CREATE TABLE IF NOT EXISTS watchlist (
 
 // --- IA (PROMPT MEJORADO) ---
 async function analyzeWithAI(token) {
-    const prompt = `Eres un trader experto en memecoins de Solana. Analiza esta oportunidad de trading.
+    const prompt = `Analiza este token de Solana para una posible inversión.
+Trigger: ${token.trigger}
+Token: ${token.token} | MCap: $${token.mcap} | Liq: $${token.liquidity}
+Volumen 5m: $${token.v5m} | Ratio B/S: ${token.ratio ? token.ratio.toFixed(2) : "1"}
+RugCheck Score: ${token.rugcheckScore}
 
-Token: ${token.token}
-Liquidez: $${Math.round(token.liquidity)}
-Volumen 5min: $${Math.round(token.v5m)}
-Ratio Compras/Ventas: ${token.ratio.toFixed(2)}
-MarketCap: $${Math.round(token.mcap)}
-Trigger: ${token.trigger} (Si es 🤖 AI AGENT, evalúa el potencial de la narrativa de inteligencia artificial).
-RugCheck Score: ${token.rugcheckScore} (1 = casi perfecto, 0 = perfecto)
+INSTRUCCIONES CRÍTICAS:
+1. Si el volumen es alto ($> 2000$) pero el precio está lateral, evalúa si es una fase de ACUMULACIÓN (alguien comprando sin mover el precio).
+2. Si es 🤖 AI AGENT, sé más flexible con la volatilidad inicial si la narrativa es coherente.
+3. Penaliza severamente (Score < 30) si la liquidez está bajando en cada ciclo.
 
-Este token ha pasado filtros estrictos de seguridad. Evalúa si tiene potencial de subida a corto plazo.
-
-Responde JSON: {"decision":"BUY|SKIP","score":0-100,"reason":"breve","redflags":[]}`;
+Responde estrictamente en JSON:
+{
+"decision":"BUY|SKIP",
+"score":0-100,
+"reason":"explicación técnica breve",
+"isAccumulation": true/false
+}`;
 
     try {
-        await new Promise(r => setTimeout(r, 400));
         const res = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             messages: [
-                { role: "system", content: "Eres un auditor experto en riesgos de tokens en Solana." },
+                { role: "system", content: "Eres un analista de Smart Money en Solana, experto en detectar acumulación de ballenas y narrativas de IA." },
                 { role: "user", content: prompt }
             ],
             response_format: { type: "json_object" }
         });
         return JSON.parse(res.choices[0].message.content);
     } catch (e) {
-        console.log("AI ERROR", e);
+        console.log("❌ AI ERROR:", e.message);
         return null;
     }
 }
