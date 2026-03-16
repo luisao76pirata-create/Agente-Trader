@@ -32,7 +32,7 @@ if (!tableInfo.some(col => col.name === 'highest_price')) {
     db.prepare("ALTER TABLE portfolio ADD COLUMN highest_price REAL").run();
 }
 
-// --- IA ---
+// --- IA (PROMPT DE ACUMULACIÓN + IA AGENTS) ---
 async function analyzeWithAI(token) {
     const prompt = `Analiza este token de Solana para una posible inversión.
 Trigger: ${token.trigger}
@@ -84,28 +84,35 @@ async function closeTrade(id, exitPrice, entryPrice, tokenName, reason) {
 }
 
 async function sendReport() {
-    const stats = db.prepare(`SELECT SUM(pnl_usd) as total, COUNT(*) as count FROM portfolio WHERE status='CLOSED'`).get();
-    const open = db.prepare(`SELECT count(*) as count FROM portfolio WHERE status='OPEN'`).get();
-    
-    const msg = `📊 **REPORTE ALPHA-CENTAURI**\n\n` +
-                `💵 PnL Realizado: \`$${(stats.total || 0).toFixed(2)}\`\n` +
-                `🔄 Trades cerrados: ${stats.count}\n` +
-                `⏳ Trades abiertos: ${open.count}/${MAX_OPEN_TRADES}\n\n` +
-                `🏦 Valor Cartera: \`$${(500 + (stats.total || 0)).toFixed(2)}\``;
+    try {
+        const stats = db.prepare(`SELECT SUM(pnl_usd) as total, COUNT(*) as count FROM portfolio WHERE status='CLOSED'`).get();
+        const open = db.prepare(`SELECT count(*) as count FROM portfolio WHERE status='OPEN'`).get();
+        
+        const msg = `📊 **REPORTE ALPHA-CENTAURI**\n\n` +
+                    `💵 PnL Realizado: \`$${(stats.total || 0).toFixed(2)}\`\n` +
+                    `🔄 Trades cerrados: ${stats.count}\n` +
+                    `⏳ Trades abiertos: ${open.count}/${MAX_OPEN_TRADES}\n\n` +
+                    `🏦 Valor Cartera Estimado: \`$${(500 + (stats.total || 0)).toFixed(2)}\``;
 
-    await bot.telegram.sendMessage(MY_CHAT_ID, msg, { parse_mode: 'Markdown' });
+        await bot.telegram.sendMessage(MY_CHAT_ID, msg, { parse_mode: 'Markdown' });
+    } catch (e) { console.error("Error Report:", e.message); }
 }
 
 // --- EL MOTOR (CORE LOOP) ---
 async function coreLoop() {
+    const timestamp = new Date().toLocaleTimeString();
     try {
-        console.log("🔄 Escaneando mercado...");
+        console.log(`\n[${timestamp}] 🔄 Escaneando mercado...`);
         const tokens = await scanMarket();
-        if (!tokens || tokens.length === 0) return;
+        
+        if (!tokens || tokens.length === 0) {
+            console.log(`[${timestamp}] ℹ️ Sin candidatos que pasen los filtros de Scanner.`);
+            return;
+        }
 
         const openPositions = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
 
-        // 1. MONITORIZACIÓN DINÁMICA
+        // 1. MONITORIZACIÓN DINÁMICA DE TRADES ABIERTOS
         for (const pos of openPositions) {
             const live = tokens.find(t => t.address === pos.address);
             if (live) {
@@ -134,11 +141,11 @@ async function coreLoop() {
                 const recentlyClosed = db.prepare("SELECT id FROM portfolio WHERE address = ? AND status = 'CLOSED' AND timestamp > datetime('now', '-4 hours')").get(token.address);
 
                 if (!alreadyIn && !recentlyClosed) {
-                    console.log(`🧠 IA analizando: ${token.token}...`);
+                    console.log(`🧠 [${token.token}] Analizando con IA...`);
                     const audit = await analyzeWithAI(token);
                     
                     if (audit && audit.decision === "BUY" && audit.score > 60) {
-                        console.log(`📊 Resultado IA para ${token.token}: [BUY] Score: ${audit.score}/100`);
+                        console.log(`✅ COMPRA: ${token.token} (Score: ${audit.score})`);
                         db.prepare("INSERT INTO portfolio (token, address, entry_price, highest_price) VALUES (?, ?, ?, ?)")
                           .run(token.token, token.address, token.price, token.price);
                         
@@ -150,17 +157,18 @@ async function coreLoop() {
                             { parse_mode: 'Markdown' });
                         break; 
                     } else if (audit) {
-                        console.log(`📊 Resultado IA para ${token.token}: [SKIP] Score: ${audit.score}/100`);
+                        console.log(`📊 [${token.token}] Veredicto IA: SKIP (Score: ${audit.score})`);
                     }
                 }
             }
         }
+        console.log(`[${timestamp}] ✅ Patrulla completada.`);
     } catch (err) { 
-        console.error("❌ Error en Loop:", err.message); 
+        console.error(`[${timestamp}] ❌ Error en Loop:`, err.message); 
     }
 }
 
-// --- COMANDOS ---
+// --- COMANDOS TELEGRAM ---
 bot.command('status', (ctx) => {
     const open = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
     if (open.length === 0) return ctx.reply("🛒 Cartera vacía.");
@@ -182,13 +190,24 @@ bot.command('panic', async (ctx) => {
     ctx.reply("🛑 PÁNICO: Todas las posiciones cerradas.");
 });
 
-// --- INICIO ---
+// --- INICIO DEL SISTEMA ---
 const startBot = async () => {
     try {
         await bot.launch({ dropPendingUpdates: true });
-        console.log("🚀 Alpha-Centauri-01: Conectado y Patrullando.");
+        console.log("🚀 Alpha-Centauri-01: Sistema Online y Patrullando.");
+        
+        // Ejecución inmediata del primer ciclo
         coreLoop();
+        
+        // Intervalo de escaneo cada 2 minutos
         setInterval(coreLoop, 120000);
+
+        // Reporte automático diario a las 21:00
+        setInterval(() => {
+            const d = new Date();
+            if (d.getHours() === 21 && d.getMinutes() === 0) sendReport();
+        }, 60000);
+
     } catch (err) {
         console.error("⚠️ Error inicio:", err.message);
         setTimeout(startBot, 5000);
@@ -196,9 +215,3 @@ const startBot = async () => {
 };
 
 startBot();
-
-// Reporte automático a las 21:00
-setInterval(() => {
-    const d = new Date();
-    if (d.getHours() === 21 && d.getMinutes() === 0) sendReport();
-}, 60000);
