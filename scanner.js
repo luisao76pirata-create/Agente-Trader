@@ -5,7 +5,10 @@ const PROFILES_API = "https://api.dexscreener.com/token-profiles/latest/v1";
 const PAIRS_API = "https://api.dexscreener.com/latest/dex/tokens/";
 const RUGCHECK_API = "https://api.rugcheck.xyz/v1/tokens/";
 
-// --- MEMORIA DE SCAMS (Para no saturar el log) ---
+// --- CONFIGURACIÓN IA AGENTS ---
+const AI_KEYWORDS = ["AI", "AGENT", "BOT", "NEURAL", "AUTONOMOUS", "MIND", "VIRTUAL", "SENTIENT", "ELIZA", "GOV"];
+
+// --- MEMORIA DE SCAMS ---
 let mutedScams = new Set();
 
 /**
@@ -21,13 +24,13 @@ async function getRugScore(address) {
 }
 
 /**
- * Scanner principal orientado a Resurrecciones (Rebirths)
+ * Scanner principal: Rebirths + IA Agents
  */
 export async function scanMarket() {
     try {
-        console.log("🔍 Buscando tokens con perfiles actualizados (Señal de Rebirth)...");
+        console.log("🔍 Patrullando: Perfiles Actualizados + Narrativa IA...");
         
-        // 1. Obtener tokens que acaban de actualizar info
+        // 1. Obtener perfiles recientes
         const profileRes = await axios.get(PROFILES_API);
         if (!profileRes.data || !Array.isArray(profileRes.data)) {
             console.log("⚠️ No se recibieron perfiles recientes.");
@@ -36,7 +39,7 @@ export async function scanMarket() {
 
         const solanaProfiles = profileRes.data
             .filter(t => t.chainId === 'solana')
-            .slice(0, 25);
+            .slice(0, 30); // Ampliamos un poco el rango para no perdernos nada
 
         if (solanaProfiles.length === 0) {
             console.log("⏳ No hay perfiles de Solana actualizados.");
@@ -57,6 +60,7 @@ export async function scanMarket() {
 
         for (const pair of pairs) {
             const sym = pair.baseToken?.symbol || "UNK";
+            const name = pair.baseToken?.name || "";
             const addr = pair.baseToken?.address;
 
             // Filtro de Gigantes
@@ -67,10 +71,15 @@ export async function scanMarket() {
             const vol5m = pair.volume?.m5 || 0;
             const vol1h = pair.volume?.h1 || 0;
 
-            // Filtros de Test
-            if (liq < 7000) continue; 
+            // --- DETECTOR DE NARRATIVA IA ---
+            const fullText = (name + " " + sym).toUpperCase();
+            const isAIAgent = AI_KEYWORDS.some(word => fullText.includes(word));
 
-            const hasMomentum = vol5m > 1500;
+            // Filtros dinámicos: Los Agentes de IA suelen tener menos liquidez inicial pero más interés
+            const minLiq = isAIAgent ? 6000 : 7000;
+            const volThreshold = isAIAgent ? 1000 : 1500;
+
+            const hasMomentum = vol5m > volThreshold;
             const isWakingUp = vol1h > 5000 && vol5m > 500;
 
             if (hasMomentum || isWakingUp) {
@@ -90,18 +99,17 @@ export async function scanMarket() {
                         v5m: vol5m,
                         ratio: buys / sells,
                         momentum: true,
-                        trigger: "🔄 REBIRTH/PROFILE",
+                        trigger: isAIAgent ? "🤖 AI AGENT" : "🔄 REBIRTH",
                         rugcheckScore: rugScore
                     });
-                    console.log(`🌟 POSIBLE RESURRECCIÓN: ${sym} | Liq: $${Math.round(liq)} | Rug: ${rugScore}`);
-                } 
-                // --- NUEVA LÓGICA DE LOGS SILENCIOSOS ---
-                else if (rugScore >= 200) {
+                    
+                    const icon = isAIAgent ? "🤖" : "🌟";
+                    console.log(`${icon} DETECTADO: ${sym} | Liq: $${Math.round(liq)} | Trigger: ${isAIAgent ? 'AI Agent' : 'Rebirth'}`);
+                    
+                } else if (rugScore >= 200) {
                     if (!mutedScams.has(addr)) {
-                        console.log(`🚫 ${sym} descartado: Riesgo RugCheck alto (${rugScore}). Silenciando...`);
+                        console.log(`🚫 ${sym} descartado: Riesgo alto (${rugScore}). Silenciando...`);
                         mutedScams.add(addr);
-                        
-                        // Limpieza de seguridad: si acumulamos 200 scams, reseteamos para no gastar RAM
                         if (mutedScams.size > 200) mutedScams.clear();
                     }
                 }
@@ -112,7 +120,7 @@ export async function scanMarket() {
         return tokens;
 
     } catch (err) {
-        console.log("❌ Error en Scanner Rebirth:", err.message);
+        console.log("❌ Error en Scanner:", err.message);
         return [];
     }
 }
