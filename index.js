@@ -241,8 +241,10 @@ const startBot = async () => {
         }, 60000);
     } catch (err) {
         console.error("⚠️ Error inicio:", err.message);
-        setTimeout(startBot, 5000);
+        if (err.response?.error_code === 409) {
+            console.log("⏳ Esperando 30s antes de reintentar...");
+            await new Promise(r => setTimeout(r, 30000));
+        }
+        startBot();
     }
 };
-
-startBot();
