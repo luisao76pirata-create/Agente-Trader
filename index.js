@@ -43,7 +43,7 @@ Liquidez: $${Math.round(token.liquidity)}
 Volumen 5min: $${Math.round(token.v5m)}
 Ratio Compras/Ventas: ${token.ratio.toFixed(2)}
 MarketCap: $${Math.round(token.mcap)}
-Trigger: ${token.trigger}
+Trigger: ${token.trigger} (Si es 🤖 AI AGENT, evalúa el potencial de la narrativa de inteligencia artificial).
 RugCheck Score: ${token.rugcheckScore} (1 = casi perfecto, 0 = perfecto)
 
 Este token ha pasado filtros estrictos de seguridad. Evalúa si tiene potencial de subida a corto plazo.
