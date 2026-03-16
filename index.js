@@ -26,15 +26,13 @@ db.prepare(`CREATE TABLE IF NOT EXISTS portfolio (
     pnl_usd REAL, status TEXT DEFAULT 'OPEN', timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
 )`).run();
 
-try {
+// Verificar si la columna highest_price existe, si no, crearla
+const tableInfo = db.prepare("PRAGMA table_info(portfolio)").all();
+if (!tableInfo.some(col => col.name === 'highest_price')) {
     db.prepare("ALTER TABLE portfolio ADD COLUMN highest_price REAL").run();
-} catch (e) { /* Ya existe */ }
+}
 
-db.prepare(`CREATE TABLE IF NOT EXISTS watchlist (
-    address TEXT PRIMARY KEY, token TEXT, added_at DATETIME DEFAULT CURRENT_TIMESTAMP
-)`).run();
-
-// --- IA (PROMPT MEJORADO) ---
+// --- IA ---
 async function analyzeWithAI(token) {
     const prompt = `Analiza este token de Solana para una posible inversión.
 Trigger: ${token.trigger}
@@ -43,7 +41,7 @@ Volumen 5m: $${token.v5m} | Ratio B/S: ${token.ratio ? token.ratio.toFixed(2) : 
 RugCheck Score: ${token.rugcheckScore}
 
 INSTRUCCIONES CRÍTICAS:
-1. Si el volumen es alto ($> 2000$) pero el precio está lateral, evalúa si es una fase de ACUMULACIÓN (alguien comprando sin mover el precio).
+1. Si el volumen es alto ($> 2000$) pero el precio está lateral, evalúa si es una fase de ACUMULACIÓN.
 2. Si es 🤖 AI AGENT, sé más flexible con la volatilidad inicial si la narrativa es coherente.
 3. Penaliza severamente (Score < 30) si la liquidez está bajando en cada ciclo.
 
@@ -85,7 +83,6 @@ async function closeTrade(id, exitPrice, entryPrice, tokenName, reason) {
         { parse_mode: 'Markdown' });
 }
 
-// --- REPORTE ---
 async function sendReport() {
     const stats = db.prepare(`SELECT SUM(pnl_usd) as total, COUNT(*) as count FROM portfolio WHERE status='CLOSED'`).get();
     const open = db.prepare(`SELECT count(*) as count FROM portfolio WHERE status='OPEN'`).get();
@@ -113,34 +110,26 @@ async function coreLoop() {
             const live = tokens.find(t => t.address === pos.address);
             if (live) {
                 const currentPrice = live.price;
-                let highest = pos.highest_price || pos.entry_price;
+                let highest = Math.max(pos.highest_price || 0, currentPrice);
 
-                if (currentPrice > highest) {
-                    highest = currentPrice;
+                if (highest > (pos.highest_price || 0)) {
                     db.prepare("UPDATE portfolio SET highest_price = ? WHERE id = ?").run(highest, pos.id);
                 }
 
                 const totalProfit = ((currentPrice - pos.entry_price) / pos.entry_price) * 100;
                 const dropFromPeak = ((currentPrice - highest) / highest) * 100;
 
-                let shouldSell = false;
-                let reason = "";
-
                 if (totalProfit > 2 && dropFromPeak <= TRAILING_STOP_DIST) {
-                    shouldSell = true;
-                    reason = `Trailing Stop (${dropFromPeak.toFixed(1)}%)`;
+                    await closeTrade(pos.id, currentPrice, pos.entry_price, pos.token, `Trailing Stop (${dropFromPeak.toFixed(1)}%)`);
                 } else if (totalProfit <= STOP_LOSS_INITIAL) {
-                    shouldSell = true;
-                    reason = `Stop Loss Inicial (${STOP_LOSS_INITIAL}%)`;
+                    await closeTrade(pos.id, currentPrice, pos.entry_price, pos.token, "Stop Loss Inicial");
                 }
-
-                if (shouldSell) await closeTrade(pos.id, currentPrice, pos.entry_price, pos.token, reason);
             }
         }
+
         // 2. ANALIZAR NUEVAS ENTRADAS
-      if (openPositions.length < MAX_OPEN_TRADES) {
+        if (openPositions.length < MAX_OPEN_TRADES) {
             for (const token of tokens) {
-                // Comprobamos si ya está abierto o si se cerró hace poco (Cooldown de 4h es suficiente)
                 const alreadyIn = db.prepare("SELECT id FROM portfolio WHERE address = ? AND status = 'OPEN'").get(token.address);
                 const recentlyClosed = db.prepare("SELECT id FROM portfolio WHERE address = ? AND status = 'CLOSED' AND timestamp > datetime('now', '-4 hours')").get(token.address);
 
@@ -148,30 +137,33 @@ async function coreLoop() {
                     console.log(`🧠 IA analizando: ${token.token}...`);
                     const audit = await analyzeWithAI(token);
                     
-                    if (audit) {
-                        console.log(`📊 Resultado IA para ${token.token}: [${audit.decision}] Score: ${audit.score}/100`);
-
-                        // Mantenemos tu umbral de 60 para captar el movimiento de la tarde
-                        if (audit.decision === "BUY" && audit.score > 60) {
-                            db.prepare("INSERT INTO portfolio (token, address, entry_price, highest_price) VALUES (?, ?, ?, ?)")
-                              .run(token.token, token.address, token.price, token.price);
-                            
-                            await bot.telegram.sendMessage(MY_CHAT_ID, 
-                                `🟢 **COMPRA AUTÓNOMA ($${TRADE_SIZE})**\n` +
-                                `Token: ${token.token}\n` +
-                                `Confianza: ${audit.score}%\n` +
-                                `Nota: ${audit.reason}`, 
-                                { parse_mode: 'Markdown' });
-                            break; 
-                        }
+                    if (audit && audit.decision === "BUY" && audit.score > 60) {
+                        console.log(`📊 Resultado IA para ${token.token}: [BUY] Score: ${audit.score}/100`);
+                        db.prepare("INSERT INTO portfolio (token, address, entry_price, highest_price) VALUES (?, ?, ?, ?)")
+                          .run(token.token, token.address, token.price, token.price);
+                        
+                        await bot.telegram.sendMessage(MY_CHAT_ID, 
+                            `🟢 **COMPRA AUTÓNOMA ($${TRADE_SIZE})**\n` +
+                            `Token: ${token.token}\n` +
+                            `Confianza: ${audit.score}%\n` +
+                            `Nota: ${audit.reason}`, 
+                            { parse_mode: 'Markdown' });
+                        break; 
+                    } else if (audit) {
+                        console.log(`📊 Resultado IA para ${token.token}: [SKIP] Score: ${audit.score}/100`);
                     }
                 }
             }
         }
+    } catch (err) { 
+        console.error("❌ Error en Loop:", err.message); 
+    }
+}
+
 // --- COMANDOS ---
 bot.command('status', (ctx) => {
     const open = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
-    if (open.length === 0) return ctx.reply("No hay posiciones abiertas.");
+    if (open.length === 0) return ctx.reply("🛒 Cartera vacía.");
     
     let m = "🛒 **Cartera Activa:**\n\n";
     open.forEach(p => {
@@ -194,21 +186,19 @@ bot.command('panic', async (ctx) => {
 const startBot = async () => {
     try {
         await bot.launch({ dropPendingUpdates: true });
-        console.log("🚀 Alpha-Centauri-01: Conectado.");
+        console.log("🚀 Alpha-Centauri-01: Conectado y Patrullando.");
+        coreLoop();
+        setInterval(coreLoop, 120000);
     } catch (err) {
-        if (err.response && err.response.error_code === 409) {
-            console.log("⚠️ Conflicto 409. Reintentando...");
-            setTimeout(startBot, 5000);
-        }
+        console.error("⚠️ Error inicio:", err.message);
+        setTimeout(startBot, 5000);
     }
 };
 
 startBot();
-setInterval(coreLoop, 120000);
+
+// Reporte automático a las 21:00
 setInterval(() => {
     const d = new Date();
     if (d.getHours() === 21 && d.getMinutes() === 0) sendReport();
-}, 120000);
-
-coreLoop();
-console.log("🤖 Alpha-Centauri patrullando...");
+}, 60000);
