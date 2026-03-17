@@ -196,7 +196,7 @@ async function coreLoop() {
                     // await sellAllTokens(pos.address); // DESCOMENTAR PARA REAL
                     await closeTrade(pos.id, currentPrice, pos.entry_price, pos.token, `Trailing Stop (${dropFromPeak.toFixed(1)}%)`);
                 } else if (totalProfit <= STOP_LOSS_INITIAL) {
-                    // await sellAllTokens(pos.address); // DESCOMENTAR PARA REAL
+                    await sellAllTokens(pos.address); // DESCOMENTAR PARA REAL
                     await closeTrade(pos.id, currentPrice, pos.entry_price, pos.token, "Stop Loss Inicial");
                 }
             }
@@ -218,7 +218,7 @@ async function coreLoop() {
                     if (audit && audit.decision === "BUY" && audit.score > 60) {
                         console.log(`✅ COMPRA DETECTADA: ${token.token} (Score: ${audit.score})`);
                         
-                        // const tx = await executeSwap("So11111111111111111111111111111111111111112", token.address, TRADE_SIZE_SOL * 1e9);
+                         const tx = await executeSwap("So11111111111111111111111111111111111111112", token.address, TRADE_SIZE_SOL * 1e9);
                         
                         // Guardamos el MCAP de entrada para saber si aplicar el muro luego
                         db.prepare("INSERT INTO portfolio (token, address, entry_price, entry_mcap, highest_price) VALUES (?, ?, ?, ?, ?)")
