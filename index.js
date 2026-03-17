@@ -25,7 +25,7 @@ const WEBHOOK_URL = "https://eliza-production-567e.up.railway.app";
 const PORT = 8080;
 
 // --- PARÁMETROS ESTRATÉGICOS ---
-const TRADE_SIZE_SOL = 0.25; // 🎯 Aproximadamente $50 (ajustable según precio SOL)
+const TRADE_SIZE_SOL = 0.50; // 🎯 Aproximadamente $50 (ajustable según precio SOL)
 const STOP_LOSS_INITIAL = -12;
 const TRAILING_STOP_DIST = -10;
 const MAX_OPEN_TRADES = 2; // Limitado a tus $100 de capital real
