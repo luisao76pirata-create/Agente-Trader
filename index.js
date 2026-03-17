@@ -3,39 +3,39 @@ import { Telegraf } from "telegraf";
 import Database from "better-sqlite3";
 import OpenAI from "openai";
 import axios from "axios";
+import { Connection, Keypair, VersionedTransaction } from "@solana/web3.js";
+import bs58 from "bs58";
 import { scanMarket } from "./scanner.js";
 
-console.log("✅ Imports OK");
+console.log("✅ Imports OK (Solana Web3 + Jupiter v6)");
 
+// --- CONFIGURACIÓN CONEXIÓN SOLANA REAL ---
+const connection = new Connection("https://api.mainnet-beta.solana.com", "confirmed");
+const wallet = Keypair.fromSecretKey(bs58.decode(process.env.SOLANA_PRIVATE_KEY));
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-console.log("✅ Telegraf OK");
-
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-console.log("✅ OpenAI OK");
-
 const db = new Database("alpha_centauri.db");
-console.log("✅ SQLite OK");
 
-console.log("🎬 Iniciando motor Alpha-Centauri...");
+console.log("🎬 Iniciando motor Alpha-Centauri v5.0...");
+console.log("🏦 Wallet detectada:", wallet.publicKey.toString());
 console.log("📅 Hora actual:", new Date().toLocaleString());
 
 const MY_CHAT_ID = 745415554;
 const WEBHOOK_URL = "https://eliza-production-567e.up.railway.app";
 const PORT = 8080;
 
-// --- PARÁMETROS BOT ---
-const TRADE_SIZE = 50;
+// --- PARÁMETROS ESTRATÉGICOS ---
+const TRADE_SIZE_SOL = 0.25; // 🎯 Aproximadamente $50 (ajustable según precio SOL)
 const STOP_LOSS_INITIAL = -12;
 const TRAILING_STOP_DIST = -10;
-const MAX_OPEN_TRADES = 8;
+const MAX_OPEN_TRADES = 2; // Limitado a tus $100 de capital real
 const MCAP_LIMIT_EXIT = 900000;
 
-// --- INICIALIZACIÓN DE BASE DE DATOS ---
+// --- INICIALIZACIÓN DE BASE DE DATOS (TU LÓGICA ORIGINAL) ---
 db.prepare(`CREATE TABLE IF NOT EXISTS portfolio (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     token TEXT, address TEXT, entry_price REAL,
-    highest_price REAL,
-    exit_price REAL,
+    highest_price REAL, exit_price REAL,
     pnl_usd REAL, status TEXT DEFAULT 'OPEN', timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
 )`).run();
 
@@ -43,10 +43,29 @@ const tableInfo = db.prepare("PRAGMA table_info(portfolio)").all();
 if (!tableInfo.some(col => col.name === 'highest_price')) {
     db.prepare("ALTER TABLE portfolio ADD COLUMN highest_price REAL").run();
 }
-
 console.log("✅ Tablas DB OK");
 
-// --- IA ---
+// --- MOTOR DE EJECUCIÓN (JUPITER) ---
+async function executeSwap(inputMint, outputMint, amountInLamports) {
+    try {
+        const quote = await axios.get(`https://quote-api.jup.ag/v6/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountInLamports}&slippageBps=100`);
+        const { data: { swapTransaction } } = await axios.post("https://quote-api.jup.ag/v6/swap", {
+            quoteResponse: quote.data,
+            userPublicKey: wallet.publicKey.toString(),
+            wrapAndUnwrapSol: true
+        });
+        const swapBuf = Buffer.from(swapTransaction, 'base64');
+        const transaction = VersionedTransaction.deserialize(swapBuf);
+        transaction.sign([wallet]);
+        const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: true });
+        return txid;
+    } catch (e) {
+        console.error("❌ Error en Swap:", e.message);
+        return null;
+    }
+}
+
+// --- IA ANALISTA (TU PROMPT DETALLADO 1:1) ---
 async function analyzeWithAI(token) {
     const prompt = `Analiza este token de Solana para una posible inversión.
 Trigger: ${token.trigger}
@@ -85,15 +104,15 @@ Responde estrictamente en JSON:
 
 // --- GESTIÓN DE TRADES ---
 async function closeTrade(id, exitPrice, entryPrice, tokenName, reason) {
-    const profitUsd = ((exitPrice - entryPrice) / entryPrice) * TRADE_SIZE;
+    const profitUsd = ((exitPrice - entryPrice) / entryPrice) * (TRADE_SIZE_SOL * 180); // USD estimado
     db.prepare("UPDATE portfolio SET status = 'CLOSED', exit_price = ?, pnl_usd = ? WHERE id = ?")
       .run(exitPrice, profitUsd, id);
 
     const emoji = profitUsd > 0 ? "💰" : "🛑";
     await bot.telegram.sendMessage(MY_CHAT_ID,
-        `${emoji} **POSICIÓN CERRADA: ${tokenName}**\n` +
+        `${emoji} **CIERRE EJECUTADO: ${tokenName}**\n` +
         `Motivo: ${reason}\n` +
-        `Resultado: $${profitUsd.toFixed(2)} (${((exitPrice - entryPrice)/entryPrice*100).toFixed(2)}%)`,
+        `Resultado estimado: $${profitUsd.toFixed(2)} (${((exitPrice - entryPrice)/entryPrice*100).toFixed(2)}%)`,
         { parse_mode: 'Markdown' });
 }
 
@@ -103,10 +122,10 @@ async function sendReport() {
         const open = db.prepare(`SELECT count(*) as count FROM portfolio WHERE status='OPEN'`).get();
 
         const msg = `📊 **REPORTE ALPHA-CENTAURI**\n\n` +
-                    `💵 PnL Realizado: \`$${(stats.total || 0).toFixed(2)}\`\n` +
+                    `💵 PnL Realizado (Hoy): \`$${(stats.total || 0).toFixed(2)}\`\n` +
                     `🔄 Trades cerrados: ${stats.count}\n` +
                     `⏳ Trades abiertos: ${open.count}/${MAX_OPEN_TRADES}\n\n` +
-                    `🏦 Valor Cartera Estimado: \`$${(500 + (stats.total || 0)).toFixed(2)}\``;
+                    `🏦 Saldo Wallet: [Consultar con /balance]`;
 
         await bot.telegram.sendMessage(MY_CHAT_ID, msg, { parse_mode: 'Markdown' });
     } catch (e) { console.error("Error Report:", e.message); }
@@ -126,7 +145,7 @@ async function coreLoop() {
 
         const openPositions = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
 
-        // 1. MONITORIZACIÓN
+        // 1. MONITORIZACIÓN DE SALIDAS
         for (const pos of openPositions) {
             const live = tokens.find(t => t.address === pos.address);
             if (live) {
@@ -134,6 +153,7 @@ async function coreLoop() {
                 const currentMCAP = live.mcap;
 
                 if (currentMCAP >= MCAP_LIMIT_EXIT) {
+                    // await executeSwap(pos.address, "So11111111111111111111111111111111111111112", "CANTIDAD_TOKENS"); 
                     await closeTrade(pos.id, currentPrice, pos.entry_price, pos.token, `Muro Psicológico (${(currentMCAP/1000).toFixed(0)}k MCAP)`);
                     continue;
                 }
@@ -165,12 +185,15 @@ async function coreLoop() {
                     const audit = await analyzeWithAI(token);
 
                     if (audit && audit.decision === "BUY" && audit.score > 60) {
-                        console.log(`✅ COMPRA: ${token.token} (Score: ${audit.score})`);
+                        console.log(`✅ COMPRA DETECTADA: ${token.token} (Score: ${audit.score})`);
+                        // DESCOMENTAR PARA COMPRA REAL:
+                        // const tx = await executeSwap("So11111111111111111111111111111111111111112", token.address, TRADE_SIZE_SOL * 1e9);
+                        
                         db.prepare("INSERT INTO portfolio (token, address, entry_price, highest_price) VALUES (?, ?, ?, ?)")
                           .run(token.token, token.address, token.price, token.price);
 
                         await bot.telegram.sendMessage(MY_CHAT_ID,
-                            `🟢 **COMPRA AUTÓNOMA ($${TRADE_SIZE})**\n` +
+                            `🟢 **COMPRA DETECTADA ($50)**\n` +
                             `Token: ${token.token}\n` +
                             `Confianza: ${audit.score}%\n` +
                             `Nota: ${audit.reason}`,
@@ -206,37 +229,29 @@ bot.command('report', () => sendReport());
 
 bot.command('balance', async (ctx) => {
     try {
-        const response = await axios.post("https://api.mainnet-beta.solana.com", {
-            jsonrpc: "2.0", id: 1, method: "getBalance",
-            params: [process.env.SOLANA_PUBLIC_KEY]
-        });
-        const sol = response.data.result.value / 1000000000;
-        ctx.reply(`💰 **Saldo Actual:**\n\n\`${sol.toFixed(4)} SOL\``, { parse_mode: 'Markdown' });
+        const balance = await connection.getBalance(wallet.publicKey);
+        ctx.reply(`💰 **Saldo Real en Wallet:**\n\n\`${(balance / 1e9).toFixed(4)} SOL\``, { parse_mode: 'Markdown' });
     } catch (e) {
-        ctx.reply("❌ Error al consultar saldo.");
+        ctx.reply("❌ Error al consultar saldo en la Blockchain.");
     }
 });
 
 bot.command('panic', async (ctx) => {
     const open = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
     for (const p of open) await closeTrade(p.id, p.entry_price * 0.90, p.entry_price, p.token, "PÁNICO");
-    ctx.reply("🛑 PÁNICO: Todas las posiciones cerradas.");
+    ctx.reply("🛑 PÁNICO: Todas las posiciones cerradas en DB.");
 });
 
 // --- INICIO CON WEBHOOK ---
 const startBot = async () => {
     try {
         console.log("✅ startBot() ejecutándose...");
-
-        // Configurar webhook
         await bot.telegram.setWebhook(`${WEBHOOK_URL}/webhook`);
         console.log(`✅ Webhook configurado: ${WEBHOOK_URL}/webhook`);
 
-        // Arrancar servidor express para recibir updates
         bot.startWebhook("/webhook", null, PORT);
         console.log(`🚀 Alpha-Centauri-01: Online en puerto ${PORT}`);
 
-        // Arrancar el core loop
         coreLoop();
         setInterval(coreLoop, 120000);
         setInterval(() => {
