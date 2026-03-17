@@ -272,7 +272,7 @@ bot.command('balance', async (ctx) => {
 bot.command('panic', async (ctx) => {
     const open = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
     for (const p of open) {
-        // await sellAllTokens(p.address); 
+         await sellAllTokens(p.address); 
         await closeTrade(p.id, p.entry_price * 0.90, p.entry_price, p.token, "PÁNICO");
     }
     ctx.reply("🛑 PÁNICO: Todas las posiciones cerradas.");
