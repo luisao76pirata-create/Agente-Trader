@@ -64,8 +64,9 @@ async function executeSwap(inputMint, outputMint, amountInLamports) {
         transaction.sign([wallet]);
         
         // --- BLOQUEADO PARA TEST ---
-        // const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: true });
-        // return txid;
+        const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: true });
+await connection.confirmTransaction(txid, "confirmed");
+return txid;
         
         return "SIMULATED_TX_ID"; 
     } catch (e) {
