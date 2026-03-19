@@ -53,7 +53,7 @@ console.log("✅ Tablas DB OK");
 // --- MOTOR DE EJECUCIÓN (JUPITER) ---
 async function executeSwap(inputMint, outputMint, amountInLamports) {
     try {
-        const quote = await axios.get(`https://quote-api.jup.ag/v6/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountInLamports}&slippageBps=100`);
+        const quote = await axios.get(`https://quote-api.jup.ag/v6/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountInLamports}&slippageBps=300`);
         const { data: { swapTransaction } } = await axios.post("https://quote-api.jup.ag/v6/swap", {
             quoteResponse: quote.data,
             userPublicKey: wallet.publicKey.toString(),
