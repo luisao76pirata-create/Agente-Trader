@@ -16,7 +16,7 @@ const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const db = new Database("alpha_centauri.db");
 
-console.log("🎬 Iniciando motor Alpha-Centauri v6.1...");
+console.log("🎬 Iniciando motor Alpha-Centauri v6.2...");
 console.log("🏦 Wallet detectada:", wallet.publicKey.toString());
 console.log("📅 Hora actual:", new Date().toLocaleString());
 
@@ -30,7 +30,7 @@ const STOP_LOSS_INITIAL = -12;
 const TRAILING_STOP_DIST = -10;
 const MAX_OPEN_TRADES = 2;
 
-// --- FILTROS DE MARKET CAP v6.1 ---
+// --- FILTROS DE MARKET CAP v6.2 ---
 const MIN_MCAP_BUY = 200000;        // 🛡️ Suelo subido a $200k para evitar "humo"
 const UMBRAL_MURO_ENTRY = 700000;   // Si entramos < 700k, usamos el muro de 950k
 const MCAP_LIMIT_EXIT = 950000;     // El muro psicológico
@@ -63,19 +63,18 @@ async function executeSwap(inputMint, outputMint, amountInLamports) {
         const transaction = VersionedTransaction.deserialize(swapBuf);
         transaction.sign([wallet]);
         
-        // --- BLOQUEADO PARA TEST ---
+        // --- LÓGICA REAL (MANTENER COMENTADA PARA TEST SI SE DESEA) ---
         const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: true });
-await connection.confirmTransaction(txid, "confirmed");
-return txid;
+        await connection.confirmTransaction(txid, "confirmed");
+        return txid;
         
-        return "SIMULATED_TX_ID"; 
+        // return "SIMULATED_TX_ID"; 
     } catch (e) {
         console.error("❌ Error en Swap:", e.message);
         return null;
     }
 }
 
-// Función para vender el 100% de los tokens de una dirección
 async function sellAllTokens(tokenAddress) {
     try {
         const mint = new PublicKey(tokenAddress);
@@ -83,9 +82,7 @@ async function sellAllTokens(tokenAddress) {
         if (accounts.value.length === 0) return null;
         const amount = accounts.value[0].account.data.parsed.info.tokenAmount.amount;
         
-        // --- BLOQUEADO PARA TEST ---
         // return await executeSwap(tokenAddress, "So11111111111111111111111111111111111111112", amount);
-        
         return "SIMULATED_SELL_ID";
     } catch (e) {
         console.error("❌ Error en sellAllTokens:", e.message);
@@ -93,7 +90,7 @@ async function sellAllTokens(tokenAddress) {
     }
 }
 
-// --- IA ANALISTA (v6.1 CON FOCO EN SUELOS Y BALLENAS) ---
+// --- IA ANALISTA (v6.2 CON FOCO EN SUELOS Y BALLENAS) ---
 async function analyzeWithAI(token) {
     const prompt = `Analiza este token de Solana para una posible inversión.
 Trigger: ${token.trigger}
@@ -101,7 +98,7 @@ Token: ${token.token} | MCap: $${token.mcap} | Liq: $${token.liquidity}
 Volumen 5m: $${token.v5m} | Ratio B/S: ${token.ratio ? token.ratio.toFixed(2) : "1"}
 RugCheck Score: ${token.rugcheckScore}
 
-INSTRUCCIONES CRÍTICAS v6.1:
+INSTRUCCIONES CRÍTICAS v6.2:
 1. CONCENTRACIÓN: Si detectas que los holders principales (Whales) tienen > 25% del suministro, responde SKIP.
 2. PATRÓN DE SUELO (DIP): Evalúa si el token ha corregido tras un pump y ahora está consolidando (lateral) con volumen estable. Valora positivamente este "suelo".
 3. Si el volumen es alto pero el precio lateral, evalúa si es una fase de ACUMULACIÓN.
@@ -133,10 +130,8 @@ Responde estrictamente en JSON:
 
 // --- GESTIÓN DE TRADES ---
 async function closeTrade(id, exitPrice, entryPrice, tokenName, reason) {
-    // Cálculo de PnL usando SOL = $90 para realismo en tus reportes
     const profitUsd = ((exitPrice - entryPrice) / entryPrice) * (TRADE_SIZE_SOL * 90); 
-    db.prepare("UPDATE portfolio SET status = 'CLOSED', exit_price = ?, pnl_usd = ? WHERE id = ?")
-      .run(exitPrice, profitUsd, id);
+    db.prepare("UPDATE portfolio SET status = 'CLOSED', exit_price = ?, pnl_usd = ? WHERE id = ?").run(exitPrice, profitUsd, id);
 
     const emoji = profitUsd > 0 ? "💰" : "🛑";
     await bot.telegram.sendMessage(MY_CHAT_ID,
@@ -187,7 +182,6 @@ async function coreLoop() {
 
                 if (applyMuro && hitMuro) {
                     console.log(`🎯 [${pos.token}] Muro alcanzado. Ejecutando salida.`);
-                    // await sellAllTokens(pos.address); // COMENTADO PARA TEST
                     await closeTrade(pos.id, currentPrice, pos.entry_price, pos.token, `Muro Psicológico (${(currentMCAP/1000).toFixed(0)}k MCAP)`);
                     continue;
                 }
@@ -201,10 +195,8 @@ async function coreLoop() {
                 const dropFromPeak = ((currentPrice - highest) / highest) * 100;
 
                 if (totalProfit > 2 && dropFromPeak <= TRAILING_STOP_DIST) {
-                    // await sellAllTokens(pos.address); // COMENTADO PARA TEST
                     await closeTrade(pos.id, currentPrice, pos.entry_price, pos.token, `Trailing Stop (${dropFromPeak.toFixed(1)}%)`);
                 } else if (totalProfit <= STOP_LOSS_INITIAL) {
-                    // await sellAllTokens(pos.address); // COMENTADO PARA TEST
                     await closeTrade(pos.id, currentPrice, pos.entry_price, pos.token, "Stop Loss Inicial");
                 }
             }
@@ -213,43 +205,26 @@ async function coreLoop() {
         // 2. NUEVAS ENTRADAS
         if (openPositions.length < MAX_OPEN_TRADES) {
             // 🧠 RANKING INTELIGENTE
-tokens.sort((a, b) => {
-    const scoreA = (a.v5m * (a.ratio || 1))
-        * (a.earlyPump ? 2 : 1)
-        * (a.secondLeg ? 2.5 : 1)
-        * (a.volumeSpike ? 1.5 : 1);
+            tokens.sort((a, b) => {
+                const scoreA = (a.v5m * (a.ratio || 1)) * (a.earlyPump ? 2 : 1) * (a.secondLeg ? 2.5 : 1) * (a.volumeSpike ? 1.5 : 1);
+                const scoreB = (b.v5m * (b.ratio || 1)) * (b.earlyPump ? 2 : 1) * (b.secondLeg ? 2.5 : 1) * (b.volumeSpike ? 1.5 : 1);
+                return scoreB - scoreA;
+            });
 
-    const scoreB = (b.v5m * (b.ratio || 1))
-        * (b.earlyPump ? 2 : 1)
-        * (b.secondLeg ? 2.5 : 1)
-        * (b.volumeSpike ? 1.5 : 1);
-
-    return scoreB - scoreA;
-});
-
-for (const token of tokens) {
+            for (const token of tokens) {
                 if (token.mcap < MIN_MCAP_BUY) continue;
 
                 const alreadyIn = db.prepare("SELECT id FROM portfolio WHERE address = ? AND status = 'OPEN'").get(token.address);
                 const recentlyClosed = db.prepare("SELECT id FROM portfolio WHERE address = ? AND status = 'CLOSED' AND timestamp > datetime('now', '-4 hours')").get(token.address);
 
                 if (!alreadyIn && !recentlyClosed) {
-                    console.log(
-`🧠 [${token.token}] IA | pump:${token.earlyPump} | second:${token.secondLeg} | vol:${token.volumeSpike}`
-);
+                    console.log(`🧠 [${token.token}] IA | pump:${token.earlyPump} | second:${token.secondLeg} | vol:${token.volumeSpike}`);
                     const audit = await analyzeWithAI(token);
 
-                    const scoreThreshold = token.earlyPump
-    ? 50
-    : token.secondLeg
-    ? 55
-    : 60;
+                    const scoreThreshold = token.earlyPump ? 50 : token.secondLeg ? 55 : 60;
 
-if (audit && audit.decision === "BUY" && audit.score > scoreThreshold)
+                    if (audit && audit.decision === "BUY" && audit.score > scoreThreshold) {
                         console.log(`✅ OPORTUNIDAD DETECTADA: ${token.token} (Score: ${audit.score})`);
-                        
-                        // --- COMPRA REAL COMENTADA PARA TEST ---
-                        // const tx = await executeSwap("So11111111111111111111111111111111111111112", token.address, TRADE_SIZE_SOL * 1e9);
                         
                         db.prepare("INSERT INTO portfolio (token, address, entry_price, entry_mcap, highest_price) VALUES (?, ?, ?, ?, ?)")
                           .run(token.token, token.address, token.price, token.mcap, token.price);
@@ -261,7 +236,7 @@ if (audit && audit.decision === "BUY" && audit.score > scoreThreshold)
                             `Confianza: ${audit.score}%\n` +
                             `Nota: ${audit.reason}`,
                             { parse_mode: 'Markdown' });
-                        break;
+                        break; // Solo una compra por ciclo
                     } else if (audit) {
                         console.log(`📊 [${token.token}] SKIP (Score: ${audit.score})`);
                     }
@@ -283,7 +258,7 @@ bot.command('status', (ctx) => {
     open.forEach(p => {
         const highest = p.highest_price || p.entry_price;
         const currentSL = highest * (1 + (TRAILING_STOP_DIST/100));
-        m += `• **${p.token}**\n  Entrada: $${p.entry_price.toFixed(6)} (MCAP: $${p.entry_mcap ? p.entry_mcap.toFixed(0) : '?'})\n  Máx: $${highest.toFixed(6)}\n  SL Actual: $${currentSL.toFixed(6)}\n\n`;
+        m += `• **${p.token}**\n  Entrada: $${p.entry_price.toFixed(6)} (MCAP: $${p.entry_mcap ? (p.entry_mcap/1000).toFixed(0) : '?'}k)\n  Máx: $${highest.toFixed(6)}\n  SL Actual: $${currentSL.toFixed(6)}\n\n`;
     });
     ctx.reply(m, { parse_mode: 'Markdown' });
 });
@@ -302,7 +277,6 @@ bot.command('balance', async (ctx) => {
 bot.command('panic', async (ctx) => {
     const open = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
     for (const p of open) {
-        // await sellAllTokens(p.address); // COMENTADO PARA TEST
         await closeTrade(p.id, p.entry_price * 0.90, p.entry_price, p.token, "PÁNICO");
     }
     ctx.reply("🛑 PÁNICO: Todas las posiciones cerradas (Simulado).");
@@ -316,7 +290,7 @@ const startBot = async () => {
         console.log(`✅ Webhook configurado: ${WEBHOOK_URL}/webhook`);
 
         bot.startWebhook("/webhook", null, PORT);
-        console.log(`🚀 Alpha-Centauri v6.1: Online en puerto ${PORT}`);
+        console.log(`🚀 Alpha-Centauri v6.2: Online en puerto ${PORT}`);
 
         coreLoop();
         setInterval(coreLoop, 120000); 
