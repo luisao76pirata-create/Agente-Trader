@@ -237,7 +237,13 @@ for (const token of tokens) {
                     console.log(`🧠 [${token.token}] Analizando con IA (Patrón/Whales)...`);
                     const audit = await analyzeWithAI(token);
 
-                    if (audit && audit.decision === "BUY" && audit.score > 60) {
+                    const scoreThreshold = token.earlyPump
+    ? 50
+    : token.secondLeg
+    ? 55
+    : 60;
+
+if (audit && audit.decision === "BUY" && audit.score > scoreThreshold)
                         console.log(`✅ OPORTUNIDAD DETECTADA: ${token.token} (Score: ${audit.score})`);
                         
                         // --- COMPRA REAL COMENTADA PARA TEST ---
