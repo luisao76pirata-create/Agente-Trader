@@ -5,15 +5,10 @@ const PROFILES_API = "https://api.dexscreener.com/token-profiles/latest/v1";
 const PAIRS_API = "https://api.dexscreener.com/latest/dex/tokens/";
 const RUGCHECK_API = "https://api.rugcheck.xyz/v1/tokens/";
 
-// --- CONFIGURACIÓN IA AGENTS ---
+// --- CONFIG ---
 const AI_KEYWORDS = ["AI", "AGENT", "BOT", "NEURAL", "AUTONOMOUS", "MIND", "VIRTUAL", "SENTIENT", "ELIZA", "GOV"];
-
-// --- MEMORIA DE SCAMS ---
 let mutedScams = new Set();
 
-/**
- * Consulta la seguridad del token en RugCheck
- */
 async function getRugScore(address) {
     try {
         const res = await axios.get(`${RUGCHECK_API}${address}/report`, { timeout: 5000 });
@@ -23,105 +18,106 @@ async function getRugScore(address) {
     }
 }
 
-/**
- * Scanner principal: Rebirths + IA Agents (CORREGIDO)
- */
 export async function scanMarket() {
     try {
-        console.log("🔍 Patrullando: Perfiles Actualizados + Narrativa IA...");
-        
-        // 1. Obtener perfiles recientes
+        console.log("🔍 Patrullando: Rebirth + AI + Second Leg...");
+
         const profileRes = await axios.get(PROFILES_API);
-        if (!profileRes.data || !Array.isArray(profileRes.data)) {
-            console.log("⚠️ No se recibieron perfiles recientes.");
-            return [];
-        }
+        if (!Array.isArray(profileRes.data)) return [];
 
         const solanaProfiles = profileRes.data
             .filter(t => t.chainId === 'solana')
-            .slice(0, 30); 
+            .slice(0, 30);
 
-        if (solanaProfiles.length === 0) {
-            console.log("⏳ No hay perfiles de Solana actualizados.");
-            return [];
-        }
+        if (solanaProfiles.length === 0) return [];
 
         const addresses = solanaProfiles.map(t => t.tokenAddress).join(',');
-        
-        // 2. Obtener datos de mercado
         const pairsRes = await axios.get(`${PAIRS_API}${addresses}`);
-        if (!pairsRes.data?.pairs) {
-            console.log("⚠️ No hay datos de mercado disponibles.");
-            return [];
-        }
+
+        if (!pairsRes.data?.pairs) return [];
 
         const tokens = [];
-        const pairs = pairsRes.data.pairs;
 
-        for (const pair of pairs) {
+        for (const pair of pairsRes.data.pairs) {
             const sym = pair.baseToken?.symbol || "UNK";
             const name = pair.baseToken?.name || "";
             const addr = pair.baseToken?.address;
 
-            // Filtro de Gigantes
-            const giants = ["SOL", "USDC", "USDT", "RAY", "BONK", "JUP", "PYTH", "WIF"];
+            const giants = ["SOL","USDC","USDT","RAY","BONK","JUP","PYTH","WIF"];
             if (giants.includes(sym.toUpperCase())) continue;
 
             const liq = pair.liquidity?.usd || 0;
             const vol5m = pair.volume?.m5 || 0;
             const vol1h = pair.volume?.h1 || 0;
 
-            // --- DETECTOR DE NARRATIVA IA ---
+            const priceNow = Number(pair.priceUsd);
+            const price1h = pair.priceChange?.h1 || 0;
+            const price24h = pair.priceChange?.h24 || 0;
+
+            // --- IA NARRATIVE ---
             const fullText = (name + " " + sym).toUpperCase();
             const isAIAgent = AI_KEYWORDS.some(word => fullText.includes(word));
 
-            // --- FILTROS DINÁMICOS CORREGIDOS ---
-            const minLiq = isAIAgent ? 6000 : 8000; // Si es Agent, permitimos $6k, si es Rebirth $8k
-            const volThreshold = isAIAgent ? 1000 : 1500;
+            // --- PATRONES ---
+            const earlyPump = price1h > 15;
 
-            const hasMomentum = vol5m > volThreshold;
-            const isWakingUp = vol1h > 5000 && vol5m > 500;
+            const hadPump = price24h > 50 || price1h > 20;
+            const isDip = price1h < 0 && price24h > 20;
+            const reactivation = vol5m > (vol1h / 12) * 2;
 
-            // FIX: Validamos que tenga liquidez REAL antes de disparar el análisis
-            if ((hasMomentum || isWakingUp) && liq >= minLiq) {
-                // 3. Auditoría RugCheck
-                const rugScore = await getRugScore(addr);
+            const secondLeg = hadPump && isDip && reactivation;
+            const volumeSpike = vol5m > (vol1h / 12) * 3;
 
-                if (rugScore !== null && rugScore < 200) {
-                    const buys = pair.txns?.m5?.buys || 1;
-                    const sells = pair.txns?.m5?.sells || 1;
+            // --- FILTROS ---
+            const minLiq = isAIAgent ? 6000 : 8000;
 
-                    tokens.push({
-                        token: sym,
-                        address: addr,
-                        price: Number(pair.priceUsd),
-                        liquidity: liq,
-                        mcap: pair.fdv || 0,
-                        v5m: vol5m,
-                        ratio: buys / sells,
-                        momentum: true,
-                        trigger: isAIAgent ? "🤖 AI AGENT" : "🔄 REBIRTH",
-                        rugcheckScore: rugScore
-                    });
-                    
-                    const icon = isAIAgent ? "🤖" : "🌟";
-                    console.log(`${icon} DETECTADO: ${sym} | Liq: $${Math.round(liq)} | Trigger: ${isAIAgent ? 'AI Agent' : 'Rebirth'}`);
-                    
-                } else if (rugScore >= 200) {
-                    if (!mutedScams.has(addr)) {
-                        console.log(`🚫 ${sym} descartado: Riesgo alto (${rugScore}). Silenciando...`);
-                        mutedScams.add(addr);
-                        if (mutedScams.size > 200) mutedScams.clear();
-                    }
+            if (liq < minLiq) continue;
+
+            const hasSignal = earlyPump || secondLeg || volumeSpike;
+            if (!hasSignal) continue;
+
+            // --- RUGCHECK ---
+            const rugScore = await getRugScore(addr);
+
+            if (rugScore !== null && rugScore < 200) {
+                const buys = pair.txns?.m5?.buys || 1;
+                const sells = pair.txns?.m5?.sells || 1;
+
+                tokens.push({
+                    token: sym,
+                    address: addr,
+                    price: priceNow,
+                    liquidity: liq,
+                    mcap: pair.fdv || 0,
+                    v5m: vol5m,
+                    ratio: buys / sells,
+                    momentum: true,
+                    trigger: isAIAgent ? "🤖 AI AGENT" : "🌟 MARKET",
+                    rugcheckScore: rugScore,
+
+                    // 🧠 NUEVO
+                    earlyPump,
+                    secondLeg,
+                    volumeSpike
+                });
+
+                console.log(
+                    `🔥 ${sym} | Pump:${earlyPump} | 2ndLeg:${secondLeg} | VolSpike:${volumeSpike}`
+                );
+
+            } else if (rugScore >= 200) {
+                if (!mutedScams.has(addr)) {
+                    console.log(`🚫 ${sym} descartado (${rugScore})`);
+                    mutedScams.add(addr);
                 }
             }
         }
 
-        console.log(`✅ Ciclo finalizado: ${tokens.length} candidatos encontrados.`);
+        console.log(`✅ ${tokens.length} candidatos`);
         return tokens;
 
     } catch (err) {
-        console.log("❌ Error en Scanner:", err.message);
+        console.log("❌ Scanner error:", err.message);
         return [];
     }
 }
