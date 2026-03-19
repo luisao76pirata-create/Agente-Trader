@@ -202,9 +202,8 @@ async function coreLoop() {
             }
         }
 
-        // 2. NUEVAS ENTRADAS
+        // 2. NUEVAS ENTRADAS (RANKING Y TRANSPARENCIA)
         if (openPositions.length < MAX_OPEN_TRADES) {
-            // 🧠 RANKING INTELIGENTE
             tokens.sort((a, b) => {
                 const scoreA = (a.v5m * (a.ratio || 1)) * (a.earlyPump ? 2 : 1) * (a.secondLeg ? 2.5 : 1) * (a.volumeSpike ? 1.5 : 1);
                 const scoreB = (b.v5m * (b.ratio || 1)) * (b.earlyPump ? 2 : 1) * (b.secondLeg ? 2.5 : 1) * (b.volumeSpike ? 1.5 : 1);
@@ -212,19 +211,42 @@ async function coreLoop() {
             });
 
             for (const token of tokens) {
-                if (token.mcap < MIN_MCAP_BUY) continue;
+                // Razón 1: MCAP insuficiente
+                if (token.mcap < MIN_MCAP_BUY) {
+                    console.log(`📌 [${token.token}] Descartado: MCAP bajo ($${(token.mcap/1000).toFixed(0)}k < 200k)`);
+                    continue;
+                }
 
                 const alreadyIn = db.prepare("SELECT id FROM portfolio WHERE address = ? AND status = 'OPEN'").get(token.address);
                 const recentlyClosed = db.prepare("SELECT id FROM portfolio WHERE address = ? AND status = 'CLOSED' AND timestamp > datetime('now', '-4 hours')").get(token.address);
 
-                if (!alreadyIn && !recentlyClosed) {
-                    console.log(`🧠 [${token.token}] IA | pump:${token.earlyPump} | second:${token.secondLeg} | vol:${token.volumeSpike}`);
-                    const audit = await analyzeWithAI(token);
+                // Razón 2: Ya operado o en cartera
+                if (alreadyIn) {
+                    console.log(`📌 [${token.token}] Descartado: Ya está en cartera activa.`);
+                    continue;
+                }
+                if (recentlyClosed) {
+                    console.log(`📌 [${token.token}] Descartado: Operado hace menos de 4h.`);
+                    continue;
+                }
 
-                    const scoreThreshold = token.earlyPump ? 50 : token.secondLeg ? 55 : 60;
+                console.log(`🧠 [${token.token}] IA Analizando... (MCAP: $${(token.mcap/1000).toFixed(0)}k)`);
+                const audit = await analyzeWithAI(token);
+                
+                const scoreThreshold = token.earlyPump ? 50 : token.secondLeg ? 55 : 60;
 
-                    if (audit && audit.decision === "BUY" && audit.score > scoreThreshold) {
-                        console.log(`✅ OPORTUNIDAD DETECTADA: ${token.token} (Score: ${audit.score})`);
+                if (audit) {
+                    // Razón 3: La IA dice SKIP
+                    if (audit.decision === "SKIP") {
+                        console.log(`❌ [${token.token}] IA rechazó (SKIP). Motivo: ${audit.reason}`);
+                    } 
+                    // Razón 4: Score por debajo del umbral
+                    else if (audit.score <= scoreThreshold) {
+                        console.log(`⚠️ [${token.token}] IA Score bajo (${audit.score}% < ${scoreThreshold}%). Motivo: ${audit.reason}`);
+                    } 
+                    // ✅ APROBADO
+                    else {
+                        console.log(`✅ [${token.token}] APROBADO con ${audit.score}% (Patrón: ${audit.pattern})`);
                         
                         db.prepare("INSERT INTO portfolio (token, address, entry_price, entry_mcap, highest_price) VALUES (?, ?, ?, ?, ?)")
                           .run(token.token, token.address, token.price, token.mcap, token.price);
@@ -232,22 +254,17 @@ async function coreLoop() {
                         await bot.telegram.sendMessage(MY_CHAT_ID,
                             `🟢 **COMPRA DETECTADA ($${(TRADE_SIZE_SOL * 90).toFixed(0)})**\n` +
                             `Token: ${token.token}\n` +
-                            `Patrón IA: ${audit.pattern}\n` +
-                            `Confianza: ${audit.score}%\n` +
-                            `Nota: ${audit.reason}`,
-                            { parse_mode: 'Markdown' });
-                        break; // Solo una compra por ciclo
-                    } else if (audit) {
-                        console.log(`📊 [${token.token}] SKIP (Score: ${audit.score})`);
+                            `Patrón IA: ${audit.pattern} | Confianza: ${audit.score}%\n` +
+                            `Nota: ${audit.reason}`, { parse_mode: 'Markdown' });
+                        break; 
                     }
+                } else {
+                    console.log(`⚠️ [${token.token}] IA no respondió al análisis.`);
                 }
             }
+        } else {
+            console.log(`⏳ Cartera llena (${openPositions.length}/${MAX_OPEN_TRADES}). No se buscan nuevas entradas.`);
         }
-        console.log(`[${timestamp}] ✅ Patrulla completada.`);
-    } catch (err) {
-        console.error(`[${timestamp}] ❌ Error en Loop:`, err.message);
-    }
-}
 
 // --- COMANDOS ---
 bot.command('status', (ctx) => {
