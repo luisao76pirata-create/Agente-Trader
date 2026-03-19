@@ -265,7 +265,7 @@ async function coreLoop() {
         } else {
             console.log(`⏳ Cartera llena (${openPositions.length}/${MAX_OPEN_TRADES}). No se buscan nuevas entradas.`);
         }
-
+}
 // --- COMANDOS ---
 bot.command('status', (ctx) => {
     const open = db.prepare("SELECT * FROM portfolio WHERE status = 'OPEN'").all();
