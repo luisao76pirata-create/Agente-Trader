@@ -212,7 +212,22 @@ async function coreLoop() {
 
         // 2. NUEVAS ENTRADAS
         if (openPositions.length < MAX_OPEN_TRADES) {
-            for (const token of tokens) {
+            // 🧠 RANKING INTELIGENTE
+tokens.sort((a, b) => {
+    const scoreA = (a.v5m * (a.ratio || 1))
+        * (a.earlyPump ? 2 : 1)
+        * (a.secondLeg ? 2.5 : 1)
+        * (a.volumeSpike ? 1.5 : 1);
+
+    const scoreB = (b.v5m * (b.ratio || 1))
+        * (b.earlyPump ? 2 : 1)
+        * (b.secondLeg ? 2.5 : 1)
+        * (b.volumeSpike ? 1.5 : 1);
+
+    return scoreB - scoreA;
+});
+
+for (const token of tokens) {
                 if (token.mcap < MIN_MCAP_BUY) continue;
 
                 const alreadyIn = db.prepare("SELECT id FROM portfolio WHERE address = ? AND status = 'OPEN'").get(token.address);
