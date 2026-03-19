@@ -234,7 +234,9 @@ for (const token of tokens) {
                 const recentlyClosed = db.prepare("SELECT id FROM portfolio WHERE address = ? AND status = 'CLOSED' AND timestamp > datetime('now', '-4 hours')").get(token.address);
 
                 if (!alreadyIn && !recentlyClosed) {
-                    console.log(`🧠 [${token.token}] Analizando con IA (Patrón/Whales)...`);
+                    console.log(
+`🧠 [${token.token}] IA | pump:${token.earlyPump} | second:${token.secondLeg} | vol:${token.volumeSpike}`
+);
                     const audit = await analyzeWithAI(token);
 
                     const scoreThreshold = token.earlyPump
