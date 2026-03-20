@@ -306,7 +306,7 @@ const startBot = async () => {
         console.log(`🚀 Alpha-Centauri v6.2: Online en puerto ${PORT}`);
 
         coreLoop();
-        setInterval(coreLoop, 120000);
+        setInterval(coreLoop, 240000);
         setInterval(() => {
             const d = new Date();
             if (d.getHours() === 21 && d.getMinutes() === 0) sendReport();
